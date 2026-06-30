@@ -583,9 +583,9 @@ fn clean_log_part(text: &str) -> String {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        app_log::debug("显示主窗口并请求焦点");
+        app_log::debug("显示主窗口并保持底层");
         let _ = window.show();
-        let _ = window.set_focus();
+        apply_main_window_bottom_layer(&window);
     } else {
         app_log::warn("显示主窗口失败：没有找到主窗口");
     }
@@ -641,11 +641,29 @@ fn toggle_main_window(app: &tauri::AppHandle) {
             _ => {
                 app_log::info("托盘菜单触发：显示主窗口");
                 let _ = window.show();
-                let _ = window.set_focus();
+                apply_main_window_bottom_layer(&window);
             }
         }
     } else {
         app_log::warn("托盘菜单切换主窗口失败：没有找到主窗口");
+    }
+}
+
+fn apply_main_window_bottom_layer(window: &tauri::WebviewWindow) {
+    if let Err(error) = window.set_always_on_top(false) {
+        app_log::warn(format!("取消主窗口置顶失败：{error}"));
+    }
+
+    if let Err(error) = window.set_always_on_bottom(true) {
+        app_log::warn(format!("设置主窗口底层显示失败：{error}"));
+    }
+}
+
+fn apply_main_window_bottom_layer_by_app(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        apply_main_window_bottom_layer(&window);
+    } else {
+        app_log::warn("设置主窗口底层显示失败：没有找到主窗口");
     }
 }
 
@@ -838,6 +856,7 @@ pub fn run() {
             app_log::debug("Tauri setup 开始执行");
             create_tray(app)?;
             restore_main_window_position(app.handle());
+            apply_main_window_bottom_layer_by_app(app.handle());
             app_log::debug("Tauri setup 执行完成");
             Ok(())
         })

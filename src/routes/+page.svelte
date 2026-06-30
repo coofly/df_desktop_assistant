@@ -285,10 +285,8 @@
   >
     <div class="title-block">
       <span class="rail"></span>
-      <div>
-        <h1>特勤处制作产物推荐</h1>
-        <p>{snapshot.updatedAt} · 本地刷新 {refreshedAt} · 每 {refreshIntervalMinutes} 分钟自动刷新</p>
-      </div>
+      <h1>特勤处制作产物推荐</h1>
+      <span class="updated-time">更新时间 {refreshedAt}</span>
     </div>
 
     <div
@@ -447,12 +445,12 @@
 
   .top-bar {
     display: flex;
-    min-height: 48px;
+    min-height: 38px;
     align-items: center;
     justify-content: space-between;
     gap: 18px;
     border: 1px solid #50545a;
-    padding: 7px 8px;
+    padding: 4px 8px;
     cursor: grab;
     user-select: none;
     background: rgb(255 255 255 / 42%);
@@ -470,8 +468,9 @@
   }
 
   .rail {
+    align-self: center;
     width: 8px;
-    height: 32px;
+    height: 24px;
     border: 1px solid #303336;
     background: rgb(23 25 26 / 12%);
   }
@@ -484,11 +483,13 @@
     letter-spacing: 0;
   }
 
-  p {
-    margin: 4px 0 0;
+  .updated-time {
+    position: relative;
+    top: 1px;
     color: #565b60;
     font-size: 12px;
     line-height: 1.2;
+    white-space: nowrap;
   }
 
   .controls {
