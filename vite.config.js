@@ -1,10 +1,12 @@
+// 文件说明：配置 Vite 开发服务器以配合 Tauri 桌面开发。
 import { defineConfig } from "vite";
 import { sveltekit } from "@sveltejs/kit/vite";
 
 // @ts-expect-error process is a nodejs global
+// 读取 Tauri 注入的开发服务器主机名。
 const host = process.env.TAURI_DEV_HOST;
 
-// https://vite.dev/config/
+// 导出 Vite 插件和固定端口配置。
 export default defineConfig(async () => ({
   plugins: [sveltekit()],
 

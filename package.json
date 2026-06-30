@@ -1,7 +1,7 @@
 {
   "name": "df_desktop_assistant",
   "version": "0.1.0",
-  "description": "",
+  "description": "三角洲行动特勤处制作产物推荐桌面小助手",
   "type": "module",
   "scripts": {
     "dev": "vite dev",

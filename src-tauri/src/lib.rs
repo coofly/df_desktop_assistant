@@ -1,132 +1,57 @@
+//! 组装 Tauri 应用、命令入口和助手共享状态。
+
 mod app_log;
 mod kkrb;
+mod models;
+mod startup;
+mod windowing;
 
-use serde::{Deserialize, Serialize};
+use models::{
+    AssistantSettings, AssistantSnapshot, CraftRecommendation, StoredAssistantSettings,
+    WindowStateFile,
+};
 use std::{
     fs,
-    io,
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
 };
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder},
-    Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    Emitter, Manager, State, WindowEvent,
+};
+use windowing::{
+    apply_main_window_desktop_layer_by_app, apply_main_window_lock_state,
+    apply_square_tauri_window_region, open_settings_window, persist_main_window_position,
+    restore_main_window_position,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
-const SETTINGS_WINDOW_LABEL: &str = "settings";
+pub(crate) const SETTINGS_WINDOW_LABEL: &str = "settings";
 const TRAY_SETTINGS: &str = "open_settings";
 const TRAY_LOCK: &str = "lock_window";
 const TRAY_UNLOCK: &str = "unlock_window";
 const TRAY_QUIT: &str = "quit_app";
-const STARTUP_ENTRY_NAME: &str = "Delta Force Craft Assistant";
-const STARTUP_REGISTRY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-const STARTUP_REGISTRY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const SETTINGS_UPDATED_EVENT: &str = "settings-updated";
-const MIN_REFRESH_INTERVAL_MINUTES: u16 = 1;
-const DEFAULT_REFRESH_INTERVAL_MINUTES: u16 = 5;
-const MAX_REFRESH_INTERVAL_MINUTES: u16 = 60;
-const MIN_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
-const DEFAULT_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
-const MAX_MAIN_WINDOW_OPACITY_PERCENT: u8 = 100;
 const APP_DATA_DIR_NAME: &str = "Delta Force Craft Assistant";
-const SETTINGS_WINDOW_WIDTH: f64 = 360.0;
-const SETTINGS_WINDOW_HEIGHT: f64 = 390.0;
-const SETTINGS_WINDOW_MAIN_GAP: i32 = 3;
+pub(crate) const SETTINGS_WINDOW_WIDTH: f64 = 360.0;
+pub(crate) const SETTINGS_WINDOW_HEIGHT: f64 = 390.0;
+pub(crate) const SETTINGS_WINDOW_MAIN_GAP: i32 = 3;
 
-#[derive(Clone, Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CraftRecommendation {
-    id: String,
-    station: String,
-    category: String,
-    item_name: String,
-    image_url: Option<String>,
-    current_profit: u32,
-    ideal_price: u32,
-    sell_time: String,
-    accent: String,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AssistantSnapshot {
-    locked: bool,
-    updated_at: String,
-    recommendations: Vec<CraftRecommendation>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct AssistantSettings {
-    refresh_interval_minutes: u16,
-    launch_on_startup: bool,
-    main_window_opacity_percent: u8,
-}
-
-impl AssistantSettings {
-    fn new(
-        refresh_interval_minutes: u16,
-        launch_on_startup: bool,
-        main_window_opacity_percent: u8,
-    ) -> Self {
-        Self {
-            refresh_interval_minutes: refresh_interval_minutes
-                .clamp(MIN_REFRESH_INTERVAL_MINUTES, MAX_REFRESH_INTERVAL_MINUTES),
-            launch_on_startup,
-            main_window_opacity_percent: main_window_opacity_percent.clamp(
-                MIN_MAIN_WINDOW_OPACITY_PERCENT,
-                MAX_MAIN_WINDOW_OPACITY_PERCENT,
-            ),
-        }
-    }
-}
-
-impl Default for AssistantSettings {
-    fn default() -> Self {
-        Self::new(
-            DEFAULT_REFRESH_INTERVAL_MINUTES,
-            false,
-            DEFAULT_MAIN_WINDOW_OPACITY_PERCENT,
-        )
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct StoredAssistantSettings {
-    refresh_interval_minutes: Option<u16>,
-    launch_on_startup: Option<bool>,
-    main_window_opacity_percent: Option<u8>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WindowPosition {
-    x: i32,
-    y: i32,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct WindowStateFile {
-    position: Option<WindowPosition>,
-    locked: bool,
-}
-
-struct AssistantState {
+/// 持有 Tauri 命令共享的助手状态。
+pub(crate) struct AssistantState {
     locked: Mutex<bool>,
     settings: Mutex<AssistantSettings>,
     settings_path: PathBuf,
-    window_state_path: PathBuf,
+    pub(crate) window_state_path: PathBuf,
     cached_recommendations: Mutex<Option<Vec<CraftRecommendation>>>,
     kkrb_client: kkrb::KkrbClient,
 }
 
 impl AssistantState {
+    /// 根据应用数据目录初始化共享状态。
     fn new(app_data_dir: PathBuf) -> Self {
         let settings_path = app_data_dir.join(SETTINGS_FILE_NAME);
         let window_state_path = app_data_dir.join(WINDOW_STATE_FILE_NAME);
@@ -157,11 +82,13 @@ impl AssistantState {
 }
 
 impl Default for AssistantState {
+    /// 使用默认应用数据目录创建助手状态。
     fn default() -> Self {
         Self::new(default_app_data_dir())
     }
 }
 
+/// 计算助手使用的应用数据目录。
 fn default_app_data_dir() -> PathBuf {
     let base_dir = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -171,6 +98,7 @@ fn default_app_data_dir() -> PathBuf {
     base_dir.join(APP_DATA_DIR_NAME)
 }
 
+/// 将布尔开关转换为中文日志文本。
 fn enabled_text(enabled: bool) -> &'static str {
     if enabled {
         "开启"
@@ -179,6 +107,7 @@ fn enabled_text(enabled: bool) -> &'static str {
     }
 }
 
+/// 读取设置文件并兼容缺失字段。
 fn read_settings_file(path: &Path) -> Result<AssistantSettings, String> {
     if !path.exists() {
         app_log::debug(format!(
@@ -214,9 +143,10 @@ fn read_settings_file(path: &Path) -> Result<AssistantSettings, String> {
     Ok(settings)
 }
 
+/// 读取设置文件并同步真实开机自启动状态。
 fn read_settings(path: &Path) -> Result<AssistantSettings, String> {
     let mut settings = read_settings_file(path)?;
-    settings.launch_on_startup = match read_launch_on_startup() {
+    settings.launch_on_startup = match startup::read_launch_on_startup() {
         Ok(launch_on_startup) => launch_on_startup,
         Err(error) => {
             app_log::warn(format!(
@@ -228,6 +158,7 @@ fn read_settings(path: &Path) -> Result<AssistantSettings, String> {
     Ok(settings)
 }
 
+/// 将设置持久化到 JSON 文件。
 fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), String> {
     app_log::debug(format!(
         "开始写入设置文件：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
@@ -247,7 +178,8 @@ fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), 
     Ok(())
 }
 
-fn read_window_state_file(path: &Path) -> Result<WindowStateFile, String> {
+/// 读取主窗口状态文件。
+pub(crate) fn read_window_state_file(path: &Path) -> Result<WindowStateFile, String> {
     if !path.exists() {
         app_log::debug(format!("未找到窗口状态文件：{}", path.display()));
         return Ok(WindowStateFile::default());
@@ -269,7 +201,11 @@ fn read_window_state_file(path: &Path) -> Result<WindowStateFile, String> {
     Ok(window_state)
 }
 
-fn write_window_state_file(path: &Path, window_state: &WindowStateFile) -> Result<(), String> {
+/// 写入主窗口状态文件。
+pub(crate) fn write_window_state_file(
+    path: &Path,
+    window_state: &WindowStateFile,
+) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
@@ -283,193 +219,7 @@ fn write_window_state_file(path: &Path, window_state: &WindowStateFile) -> Resul
     Ok(())
 }
 
-fn quoted_startup_exe_path(exe_path: &Path) -> String {
-    format!("\"{}\"", exe_path.to_string_lossy())
-}
-
-fn startup_registry_command(enable: bool, exe_path: &Path) -> Vec<String> {
-    if enable {
-        vec![
-            "add".to_string(),
-            STARTUP_REGISTRY_PATH.to_string(),
-            "/v".to_string(),
-            STARTUP_ENTRY_NAME.to_string(),
-            "/t".to_string(),
-            "REG_SZ".to_string(),
-            "/d".to_string(),
-            quoted_startup_exe_path(exe_path),
-            "/f".to_string(),
-        ]
-    } else {
-        vec![
-            "delete".to_string(),
-            STARTUP_REGISTRY_PATH.to_string(),
-            "/v".to_string(),
-            STARTUP_ENTRY_NAME.to_string(),
-            "/f".to_string(),
-        ]
-    }
-}
-
-fn startup_registry_status_result(enable: bool, success: bool) -> Result<(), String> {
-    if success {
-        Ok(())
-    } else if enable {
-        Err("开机自启动开启失败，请确认当前账号有权限写入用户启动项".to_string())
-    } else {
-        Err("开机自启动关闭失败，请确认当前账号有权限删除用户启动项".to_string())
-    }
-}
-
-fn startup_registry_value_to_enabled(value: Option<&str>) -> bool {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .is_some()
-}
-
-#[cfg(windows)]
-fn read_startup_registry_value() -> Result<Option<String>, String> {
-    use std::ptr::null_mut;
-    use windows_sys::Win32::{
-        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS},
-        System::Registry::{
-            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
-            REG_SZ,
-        },
-    };
-
-    unsafe {
-        let mut key: HKEY = null_mut();
-        let open_result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            wide_null(STARTUP_REGISTRY_SUBKEY).as_ptr(),
-            0,
-            KEY_QUERY_VALUE,
-            &mut key,
-        );
-
-        if open_result == ERROR_FILE_NOT_FOUND {
-            return Ok(None);
-        }
-
-        if open_result != ERROR_SUCCESS {
-            return Err(registry_error_message("读取开机自启动状态失败", open_result));
-        }
-
-        let value_name = wide_null(STARTUP_ENTRY_NAME);
-        let mut value_type = 0;
-        let mut value_size = 0;
-        let size_result = RegQueryValueExW(
-            key,
-            value_name.as_ptr(),
-            std::ptr::null(),
-            &mut value_type,
-            null_mut(),
-            &mut value_size,
-        );
-
-        if size_result == ERROR_FILE_NOT_FOUND {
-            RegCloseKey(key);
-            return Ok(None);
-        }
-
-        if size_result != ERROR_SUCCESS && size_result != ERROR_MORE_DATA {
-            RegCloseKey(key);
-            return Err(registry_error_message("读取开机自启动状态失败", size_result));
-        }
-
-        if value_type != REG_SZ || value_size == 0 {
-            RegCloseKey(key);
-            return Ok(None);
-        }
-
-        let mut buffer = vec![0u8; value_size as usize];
-        let query_result = RegQueryValueExW(
-            key,
-            value_name.as_ptr(),
-            std::ptr::null(),
-            &mut value_type,
-            buffer.as_mut_ptr(),
-            &mut value_size,
-        );
-        RegCloseKey(key);
-
-        if query_result == ERROR_FILE_NOT_FOUND {
-            return Ok(None);
-        }
-
-        if query_result != ERROR_SUCCESS {
-            return Err(registry_error_message("读取开机自启动状态失败", query_result));
-        }
-
-        if value_type != REG_SZ {
-            return Ok(None);
-        }
-
-        let len = (value_size as usize / 2).min(buffer.len() / 2);
-        let wide: Vec<u16> = buffer
-            .chunks_exact(2)
-            .take(len)
-            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
-            .take_while(|character| *character != 0)
-            .collect();
-
-        Ok(Some(String::from_utf16_lossy(&wide)))
-    }
-}
-
-#[cfg(not(windows))]
-fn read_startup_registry_value() -> Result<Option<String>, String> {
-    Ok(None)
-}
-
-fn read_launch_on_startup() -> Result<bool, String> {
-    let value = read_startup_registry_value()?;
-    Ok(startup_registry_value_to_enabled(value.as_deref()))
-}
-
-fn registry_error_message(context: &str, code: u32) -> String {
-    format!(
-        "{context}：{}（Windows 错误码 {code}）",
-        io::Error::from_raw_os_error(code as i32)
-    )
-}
-
-fn apply_launch_on_startup(enable: bool) -> Result<(), String> {
-    let exe_path = std::env::current_exe().map_err(|error| error.to_string())?;
-    if !enable && !read_launch_on_startup()? {
-        app_log::debug("开机自启动已处于关闭状态，跳过删除启动项");
-        return Ok(());
-    }
-
-    let args = startup_registry_command(enable, &exe_path);
-    app_log::debug(format!(
-        "开始{}开机自启动，程序路径：{}",
-        if enable { "开启" } else { "关闭" },
-        exe_path.display()
-    ));
-    let status = Command::new("reg.exe")
-        .args(args)
-        .status()
-        .map_err(|error| error.to_string())?;
-
-    if status.success() {
-        app_log::debug(format!(
-            "开机自启动{}操作完成",
-            if enable { "开启" } else { "关闭" }
-        ));
-    } else {
-        app_log::warn(format!(
-            "开机自启动{}操作返回失败状态：{}",
-            if enable { "开启" } else { "关闭" },
-            status
-        ));
-    }
-
-    startup_registry_status_result(enable, status.success())
-}
-
+/// 提供无网络或失败兜底的本地推荐数据。
 fn mock_recommendations() -> Vec<CraftRecommendation> {
     vec![
         CraftRecommendation {
@@ -519,6 +269,7 @@ fn mock_recommendations() -> Vec<CraftRecommendation> {
     ]
 }
 
+/// 将锁定状态、更新时间和推荐列表组合成快照。
 fn snapshot_with_recommendations(
     locked: bool,
     updated_at: impl Into<String>,
@@ -531,16 +282,19 @@ fn snapshot_with_recommendations(
     }
 }
 
-fn lock_value(state: &AssistantState) -> bool {
+/// 读取当前窗口锁定状态。
+pub(crate) fn lock_value(state: &AssistantState) -> bool {
     *state.locked.lock().expect("assistant state lock poisoned")
 }
 
+/// 更新当前窗口锁定状态并返回新值。
 fn set_lock_value(state: &AssistantState, locked: bool) -> bool {
     let mut lock = state.locked.lock().expect("assistant state lock poisoned");
     *lock = locked;
     *lock
 }
 
+/// 将窗口锁定状态写入窗口状态文件。
 fn persist_window_lock_state(state: &AssistantState, locked: bool) {
     let mut window_state = read_window_state_file(&state.window_state_path).unwrap_or_default();
     window_state.locked = locked;
@@ -551,6 +305,7 @@ fn persist_window_lock_state(state: &AssistantState, locked: bool) {
 }
 
 #[tauri::command]
+/// 获取制作推荐快照并在失败时回退到缓存或 mock。
 fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
     app_log::debug("前端请求获取制作推荐");
     let locked = lock_value(&state);
@@ -601,6 +356,7 @@ fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
 }
 
 #[tauri::command]
+/// 返回当前主窗口是否锁定位置。
 fn get_lock_state(state: State<'_, AssistantState>) -> bool {
     let locked = lock_value(&state);
     app_log::debug(format!("前端读取锁定状态：{}", enabled_text(locked)));
@@ -608,6 +364,7 @@ fn get_lock_state(state: State<'_, AssistantState>) -> bool {
 }
 
 #[tauri::command]
+/// 更新主窗口位置锁定状态并持久化。
 fn set_lock_state(app: tauri::AppHandle, state: State<'_, AssistantState>, locked: bool) -> bool {
     app_log::info(format!(
         "窗口位置已{}",
@@ -620,13 +377,14 @@ fn set_lock_state(app: tauri::AppHandle, state: State<'_, AssistantState>, locke
 }
 
 #[tauri::command]
+/// 读取助手设置并同步真实自启动状态。
 fn get_settings(state: State<'_, AssistantState>) -> AssistantSettings {
     let mut settings = state
         .settings
         .lock()
         .expect("assistant settings lock poisoned")
         .clone();
-    match read_launch_on_startup() {
+    match startup::read_launch_on_startup() {
         Ok(launch_on_startup) => {
             settings.launch_on_startup = launch_on_startup;
             *state
@@ -655,6 +413,7 @@ fn get_settings(state: State<'_, AssistantState>) -> AssistantSettings {
 }
 
 #[tauri::command]
+/// 保存助手设置并通知主窗口刷新设置。
 fn save_settings(
     app: tauri::AppHandle,
     state: State<'_, AssistantState>,
@@ -674,10 +433,10 @@ fn save_settings(
         main_window_opacity_percent,
     );
 
-    apply_launch_on_startup(settings.launch_on_startup)?;
+    startup::apply_launch_on_startup(settings.launch_on_startup)?;
     let settings = AssistantSettings::new(
         settings.refresh_interval_minutes,
-        read_launch_on_startup()?,
+        startup::read_launch_on_startup()?,
         settings.main_window_opacity_percent,
     );
     write_settings_file(&state.settings_path, &settings)?;
@@ -697,6 +456,7 @@ fn save_settings(
 }
 
 #[tauri::command]
+/// 从前端请求启动主窗口拖动。
 fn start_window_drag(
     window: tauri::Window,
     state: State<'_, AssistantState>,
@@ -714,6 +474,7 @@ fn start_window_drag(
 }
 
 #[tauri::command]
+/// 从前端请求启动设置窗口拖动。
 fn start_settings_window_drag(window: tauri::Window) -> Result<(), String> {
     app_log::debug("开始拖动设置窗口");
     window.start_dragging().map_err(|error| {
@@ -723,6 +484,7 @@ fn start_settings_window_drag(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+/// 关闭当前设置窗口。
 fn close_settings_window(window: tauri::Window) -> Result<(), String> {
     if window.label() != SETTINGS_WINDOW_LABEL {
         return Err("只能关闭设置窗口".to_string());
@@ -736,6 +498,7 @@ fn close_settings_window(window: tauri::Window) -> Result<(), String> {
 }
 
 #[tauri::command]
+/// 从右下角启动主窗口尺寸调整。
 fn start_window_resize(
     window: tauri::Window,
     state: State<'_, AssistantState>,
@@ -755,6 +518,7 @@ fn start_window_resize(
 }
 
 #[tauri::command]
+/// 写入来自前端页面的日志。
 fn write_frontend_log(source: String, message: String) {
     app_log::info(format!(
         "前端日志 [{}] {}",
@@ -764,6 +528,7 @@ fn write_frontend_log(source: String, message: String) {
 }
 
 #[tauri::command]
+/// 返回当前日志文件路径。
 fn get_log_file_path() -> String {
     let path = app_log::log_path()
         .unwrap_or_else(|| default_app_data_dir().join("logs").join("assistant.log"));
@@ -773,6 +538,7 @@ fn get_log_file_path() -> String {
 }
 
 #[tauri::command]
+/// 使用资源管理器打开日志文件夹。
 fn open_log_folder() -> Result<(), String> {
     let path = app_log::log_path()
         .unwrap_or_else(|| default_app_data_dir().join("logs").join("assistant.log"));
@@ -791,6 +557,7 @@ fn open_log_folder() -> Result<(), String> {
     Ok(())
 }
 
+/// 清理前端传入的日志片段，避免控制字符污染日志。
 fn clean_log_part(text: &str) -> String {
     let mut cleaned = text
         .chars()
@@ -805,492 +572,7 @@ fn clean_log_part(text: &str) -> String {
     cleaned
 }
 
-fn restore_main_window_position(app: &tauri::AppHandle) {
-    let state = app.state::<AssistantState>();
-    let window_state = match read_window_state_file(&state.window_state_path) {
-        Ok(window_state) => window_state,
-        Err(error) => {
-            app_log::warn(format!("读取窗口状态失败：{error}"));
-            return;
-        }
-    };
-    let Some(position) = window_state.position else {
-        return;
-    };
-
-    if position.x <= -30_000 || position.y <= -30_000 {
-        app_log::warn(format!(
-            "忽略疑似隐藏窗口位置：x={}，y={}",
-            position.x, position.y
-        ));
-        return;
-    }
-
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        let result = window.set_position(tauri::PhysicalPosition::new(position.x, position.y));
-
-        match result {
-            Ok(_) => app_log::info(format!(
-                "已恢复主窗口位置：x={}，y={}",
-                position.x, position.y
-            )),
-            Err(error) => app_log::warn(format!("恢复主窗口位置失败：{error}")),
-        }
-    } else {
-        app_log::warn("恢复主窗口位置失败：没有找到主窗口");
-    }
-}
-
-fn persist_main_window_position(
-    window: &tauri::Window,
-    state: State<'_, AssistantState>,
-    fallback_position: &tauri::PhysicalPosition<i32>,
-) {
-    let position = main_window_screen_position(window).unwrap_or(WindowPosition {
-        x: fallback_position.x,
-        y: fallback_position.y,
-    });
-
-    if position.x <= -30_000 || position.y <= -30_000 {
-        app_log::debug(format!(
-            "跳过保存疑似隐藏窗口位置：x={}，y={}",
-            position.x, position.y
-        ));
-        return;
-    }
-
-    let window_state = WindowStateFile {
-        position: Some(position),
-        locked: lock_value(&state),
-    };
-
-    if let Err(error) = write_window_state_file(&state.window_state_path, &window_state) {
-        app_log::warn(format!("保存主窗口状态失败：{error}"));
-    }
-}
-
-fn main_window_screen_position(window: &tauri::Window) -> Option<WindowPosition> {
-    use windows_sys::Win32::{Foundation::RECT, UI::WindowsAndMessaging::GetWindowRect};
-
-    let Ok(hwnd) = window.hwnd() else {
-        app_log::warn("保存主窗口屏幕位置失败：无法获取 HWND");
-        return None;
-    };
-
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-
-    let success = unsafe { GetWindowRect(hwnd.0 as _, &mut rect) } != 0;
-    if !success {
-        app_log::warn("保存主窗口屏幕位置失败：GetWindowRect 调用失败");
-        return None;
-    }
-
-    Some(WindowPosition {
-        x: rect.left,
-        y: rect.top,
-    })
-}
-
-fn apply_main_window_desktop_layer(window: &tauri::WebviewWindow) {
-    apply_main_window_desktop_widget_behavior(window);
-    apply_square_window_region(window, "主窗口桌面挂件行为");
-
-    if let Err(error) = window.set_always_on_top(false) {
-        app_log::warn(format!("取消主窗口置顶失败：{error}"));
-    }
-}
-
-fn apply_square_window_region(window: &tauri::WebviewWindow, context: &str) {
-    let Ok(hwnd) = window.hwnd() else {
-        app_log::warn(format!("{context}设置直角窗口区域失败：无法获取 HWND"));
-        return;
-    };
-
-    apply_square_hwnd_region(hwnd.0 as _, context);
-}
-
-fn apply_square_tauri_window_region(window: &tauri::Window, context: &str) {
-    let Ok(hwnd) = window.hwnd() else {
-        app_log::warn(format!("{context}设置直角窗口区域失败：无法获取 HWND"));
-        return;
-    };
-
-    apply_square_hwnd_region(hwnd.0 as _, context);
-}
-
-fn apply_square_hwnd_region(hwnd: windows_sys::Win32::Foundation::HWND, context: &str) {
-    use windows_sys::Win32::{
-        Foundation::RECT,
-        Graphics::Gdi::{CreateRectRgn, SetWindowRgn},
-        UI::WindowsAndMessaging::GetClientRect,
-    };
-
-    let mut rect = RECT {
-        left: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-    };
-
-    unsafe {
-        if GetClientRect(hwnd, &mut rect) == 0 {
-            app_log::warn(format!("{context}设置直角窗口区域失败：GetClientRect 调用失败"));
-            return;
-        }
-
-        let region = CreateRectRgn(0, 0, rect.right - rect.left, rect.bottom - rect.top);
-        if region.is_null() {
-            app_log::warn(format!("{context}设置直角窗口区域失败：CreateRectRgn 调用失败"));
-            return;
-        }
-
-        if SetWindowRgn(hwnd, region, 1) == 0 {
-            app_log::warn(format!("{context}设置直角窗口区域失败：SetWindowRgn 调用失败"));
-        }
-    }
-}
-
-fn apply_main_window_desktop_widget_behavior(window: &tauri::WebviewWindow) {
-    use std::ptr::null;
-    use windows_sys::Win32::{
-        Foundation::{HWND, LPARAM, RECT},
-        UI::WindowsAndMessaging::{
-            EnumWindows, FindWindowExW, FindWindowW, GetClassNameW, GetWindow, GetWindowLongPtrW,
-            GetWindowRect, SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos,
-            GWL_EXSTYLE, GWL_STYLE, GW_HWNDNEXT, HWND_TOP, SMTO_NORMAL, SWP_FRAMECHANGED,
-            SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
-            SWP_SHOWWINDOW, WS_CHILD, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW, WS_POPUP,
-        },
-    };
-
-    let Ok(hwnd) = window.hwnd() else {
-        app_log::warn("设置主窗口桌面挂件行为失败：无法获取 HWND");
-        return;
-    };
-    let hwnd = hwnd.0 as HWND;
-
-    unsafe {
-        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let widget_ex_style = (ex_style | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
-
-        if widget_ex_style != ex_style {
-            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, widget_ex_style);
-        }
-
-        attach_main_window_to_desktop(hwnd);
-
-        let _ = SetWindowPos(
-            hwnd,
-            HWND_TOP,
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED,
-        );
-    }
-
-    app_log::info("已应用主窗口桌面挂件行为");
-
-    unsafe fn attach_main_window_to_desktop(target_hwnd: HWND) {
-        let Some(desktop_hwnd) = find_desktop_parent_window() else {
-            app_log::warn("未找到可挂载的桌面窗口，跳过 SetParent");
-            return;
-        };
-
-        let mut target_rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        let mut desktop_rect = RECT {
-            left: 0,
-            top: 0,
-            right: 0,
-            bottom: 0,
-        };
-        let has_target_rect = GetWindowRect(target_hwnd, &mut target_rect) != 0;
-        let has_desktop_rect = GetWindowRect(desktop_hwnd, &mut desktop_rect) != 0;
-
-        let previous_parent = SetParent(target_hwnd, desktop_hwnd);
-
-        let style = GetWindowLongPtrW(target_hwnd, GWL_STYLE);
-        let desktop_child_style = (style | WS_CHILD as isize) & !(WS_POPUP as isize);
-        if desktop_child_style != style {
-            SetWindowLongPtrW(target_hwnd, GWL_STYLE, desktop_child_style);
-        }
-
-        if has_target_rect && has_desktop_rect {
-            let width = target_rect.right - target_rect.left;
-            let height = target_rect.bottom - target_rect.top;
-            let mut x = target_rect.left - desktop_rect.left;
-            let mut y = target_rect.top - desktop_rect.top;
-            let parent_width = desktop_rect.right - desktop_rect.left;
-            let parent_height = desktop_rect.bottom - desktop_rect.top;
-            let needs_recenter =
-                x + width < 0 || y + height < 0 || x > parent_width || y > parent_height;
-
-            if needs_recenter || width <= 0 || height <= 0 {
-                x = (parent_width - 1120).max(0) / 2;
-                y = (parent_height - 244).max(0) / 2;
-            }
-
-            let _ = SetWindowPos(
-                target_hwnd,
-                HWND_TOP,
-                x,
-                y,
-                width,
-                height,
-                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
-            );
-        }
-
-        app_log::info(format!(
-            "主窗口已挂载到桌面窗口：desktop={:#x} class=\"{}\" previous={:#x}",
-            desktop_hwnd as usize,
-            window_class_name(desktop_hwnd),
-            previous_parent as usize
-        ));
-    }
-
-    unsafe fn find_desktop_parent_window() -> Option<HWND> {
-        let progman = FindWindowW(wide_null("Progman").as_ptr(), null());
-        if !progman.is_null() {
-            let mut result = 0usize;
-            let _ = SendMessageTimeoutW(progman, 0x052c, 0, 0, SMTO_NORMAL, 1000, &mut result);
-        }
-
-        let mut search = DesktopParentSearch {
-            shell_view_parent: null_mut_hwnd(),
-            worker_after_shell_view: null_mut_hwnd(),
-            first_worker: null_mut_hwnd(),
-            progman,
-        };
-
-        EnumWindows(
-            Some(enum_desktop_parent_candidate),
-            (&mut search as *mut DesktopParentSearch) as LPARAM,
-        );
-
-        if !search.worker_after_shell_view.is_null() {
-            Some(search.worker_after_shell_view)
-        } else if is_allowed_desktop_parent(search.shell_view_parent) {
-            Some(search.shell_view_parent)
-        } else if is_allowed_desktop_parent(search.first_worker) {
-            Some(search.first_worker)
-        } else if is_allowed_desktop_parent(progman) {
-            Some(progman)
-        } else {
-            None
-        }
-    }
-
-    struct DesktopParentSearch {
-        shell_view_parent: HWND,
-        worker_after_shell_view: HWND,
-        first_worker: HWND,
-        progman: HWND,
-    }
-
-    unsafe extern "system" fn enum_desktop_parent_candidate(hwnd: HWND, lparam: LPARAM) -> i32 {
-        let search = &mut *(lparam as *mut DesktopParentSearch);
-        let class_name = window_class_name(hwnd);
-
-        if class_name.eq_ignore_ascii_case("WorkerW") && search.first_worker.is_null() {
-            search.first_worker = hwnd;
-        }
-
-        if is_allowed_desktop_parent(hwnd) && has_direct_shell_view_child(hwnd) {
-            search.shell_view_parent = hwnd;
-
-            let next = GetWindow(hwnd, GW_HWNDNEXT);
-            if !next.is_null() && window_class_name(next).eq_ignore_ascii_case("WorkerW") {
-                search.worker_after_shell_view = next;
-            }
-
-            return 0;
-        }
-
-        if hwnd == search.progman && has_direct_shell_view_child(hwnd) {
-            search.shell_view_parent = hwnd;
-            return 0;
-        }
-
-        1
-    }
-
-    unsafe fn has_direct_shell_view_child(hwnd: HWND) -> bool {
-        !FindWindowExW(
-            hwnd,
-            null_mut_hwnd(),
-            wide_null("SHELLDLL_DefView").as_ptr(),
-            null(),
-        )
-        .is_null()
-    }
-
-    unsafe fn is_allowed_desktop_parent(hwnd: HWND) -> bool {
-        if hwnd.is_null() {
-            return false;
-        }
-
-        let class_name = window_class_name(hwnd);
-        class_name.eq_ignore_ascii_case("Progman") || class_name.eq_ignore_ascii_case("WorkerW")
-    }
-
-    unsafe fn window_class_name(hwnd: HWND) -> String {
-        let mut buffer = [0u16; 256];
-        let len = GetClassNameW(hwnd, buffer.as_mut_ptr(), buffer.len() as i32);
-        wide_buffer_to_string(&buffer, len)
-    }
-
-    fn wide_buffer_to_string(buffer: &[u16], len: i32) -> String {
-        if len <= 0 {
-            return String::new();
-        }
-
-        String::from_utf16_lossy(&buffer[..len as usize])
-            .chars()
-            .filter(|character| !character.is_control())
-            .take(80)
-            .collect()
-    }
-}
-
-fn wide_null(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-fn null_mut_hwnd() -> windows_sys::Win32::Foundation::HWND {
-    std::ptr::null_mut()
-}
-
-fn apply_main_window_desktop_layer_by_app(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        apply_main_window_desktop_layer(&window);
-    } else {
-        app_log::warn("设置主窗口桌面挂件层失败：没有找到主窗口");
-    }
-}
-
-fn apply_main_window_lock_state(app: &tauri::AppHandle, locked: bool) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        if let Err(error) = window.set_resizable(!locked) {
-            app_log::warn(format!("更新主窗口缩放状态失败：{error}"));
-        }
-
-        apply_square_window_region(&window, "更新主窗口锁定状态后");
-    } else {
-        app_log::warn("更新主窗口缩放状态失败：没有找到主窗口");
-    }
-}
-
-fn anchored_popup_position(
-    main_position: tauri::PhysicalPosition<i32>,
-    main_size: tauri::PhysicalSize<u32>,
-    popup_size: tauri::PhysicalSize<u32>,
-    work_area_position: tauri::PhysicalPosition<i32>,
-) -> tauri::PhysicalPosition<i32> {
-    let work_top = work_area_position.y;
-    let popup_height = popup_size.height as i32;
-    let main_height = main_size.height as i32;
-
-    let y = if main_position.y - popup_height - SETTINGS_WINDOW_MAIN_GAP >= work_top {
-        main_position.y - popup_height - SETTINGS_WINDOW_MAIN_GAP
-    } else {
-        main_position.y + main_height + SETTINGS_WINDOW_MAIN_GAP
-    };
-
-    tauri::PhysicalPosition::new(main_position.x, y)
-}
-
-fn position_popup_window_next_to_main(
-    main_window: &tauri::WebviewWindow,
-    popup_window: &tauri::WebviewWindow,
-) -> Result<(), String> {
-    let main_position = main_window
-        .outer_position()
-        .map_err(|error| error.to_string())?;
-    let main_size = main_window
-        .outer_size()
-        .map_err(|error| error.to_string())?;
-    let popup_size = popup_window
-        .outer_size()
-        .map_err(|error| error.to_string())?;
-    let monitor = main_window
-        .current_monitor()
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| "无法获取主窗口所在显示器".to_string())?;
-    let work_area = monitor.work_area();
-    let position =
-        anchored_popup_position(main_position, main_size, popup_size, work_area.position);
-
-    popup_window
-        .set_position(position)
-        .map_err(|error| error.to_string())?;
-    app_log::debug(format!(
-        "设置窗口已贴靠主窗口：x={}，y={}",
-        position.x, position.y
-    ));
-    Ok(())
-}
-
-fn place_settings_window(app: &tauri::AppHandle, settings_window: &tauri::WebviewWindow) {
-    let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
-        app_log::warn("设置窗口定位失败：没有找到主窗口");
-        return;
-    };
-
-    if let Err(error) = position_popup_window_next_to_main(&main_window, settings_window) {
-        app_log::warn(format!("设置窗口定位失败：{error}"));
-    }
-}
-
-fn open_settings_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-        app_log::info("显示设置窗口");
-        place_settings_window(app, &window);
-        let _ = window.set_always_on_top(true);
-        let _ = window.show();
-        let _ = window.set_focus();
-        return;
-    }
-
-    app_log::debug("开始创建设置窗口");
-    let result = WebviewWindowBuilder::new(
-        app,
-        SETTINGS_WINDOW_LABEL,
-        WebviewUrl::App("/settings".into()),
-    )
-    .title("设置")
-    .inner_size(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT)
-    .min_inner_size(320.0, 320.0)
-    .decorations(false)
-    .resizable(false)
-    .skip_taskbar(true)
-    .always_on_top(true)
-    .transparent(true)
-    .shadow(false)
-    .build()
-    .and_then(|window| {
-        place_settings_window(app, &window);
-        let _ = window.set_focus();
-        Ok(window)
-    });
-
-    match result {
-        Ok(_) => app_log::info("设置窗口创建成功"),
-        Err(error) => app_log::error(format!("设置窗口创建失败：{error}")),
-    }
-}
-
+/// 创建标题栏右键菜单。
 fn create_assistant_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu<R>> {
     let settings = MenuItemBuilder::with_id(TRAY_SETTINGS, "设置").build(manager)?;
     let lock = MenuItemBuilder::with_id(TRAY_LOCK, "锁定位置").build(manager)?;
@@ -1304,6 +586,7 @@ fn create_assistant_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri
         .build()
 }
 
+/// 处理标题栏右键菜单事件。
 fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
     match id {
         TRAY_SETTINGS => open_settings_window(app),
@@ -1330,6 +613,7 @@ fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
 }
 
 #[tauri::command]
+/// 在鼠标位置弹出标题栏右键菜单。
 fn show_title_bar_menu(
     app: tauri::AppHandle,
     window: tauri::Window,
@@ -1347,6 +631,7 @@ fn show_title_bar_menu(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// 启动 Tauri 应用并注册命令、菜单和窗口事件。
 pub fn run() {
     let app_data_dir = default_app_data_dir();
     let log_path = app_log::init(app_data_dir.clone());
@@ -1397,6 +682,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::WindowPosition;
     use std::fs;
 
     #[test]
@@ -1568,90 +854,5 @@ mod tests {
 
         assert_eq!(loaded.position, Some(position));
         assert!(loaded.locked);
-    }
-
-    #[test]
-    fn popup_position_uses_space_above_main_window_first() {
-        let position = anchored_popup_position(
-            tauri::PhysicalPosition::new(200, 500),
-            tauri::PhysicalSize::new(1000, 260),
-            tauri::PhysicalSize::new(360, 340),
-            tauri::PhysicalPosition::new(0, 0),
-        );
-
-        assert_eq!(position, tauri::PhysicalPosition::new(200, 157));
-    }
-
-    #[test]
-    fn popup_position_falls_below_main_window_without_top_space() {
-        let position = anchored_popup_position(
-            tauri::PhysicalPosition::new(200, 120),
-            tauri::PhysicalSize::new(1000, 260),
-            tauri::PhysicalSize::new(360, 340),
-            tauri::PhysicalPosition::new(0, 0),
-        );
-
-        assert_eq!(position, tauri::PhysicalPosition::new(200, 383));
-    }
-
-    #[test]
-    fn popup_position_aligns_left_edge_with_main_window() {
-        let position = anchored_popup_position(
-            tauri::PhysicalPosition::new(1780, 500),
-            tauri::PhysicalSize::new(1000, 260),
-            tauri::PhysicalSize::new(360, 340),
-            tauri::PhysicalPosition::new(0, 0),
-        );
-
-        assert_eq!(position, tauri::PhysicalPosition::new(1780, 157));
-    }
-
-    #[test]
-    fn startup_registration_builds_expected_commands() {
-        let exe_path = std::path::Path::new(r"C:\Program Files\Delta Force\assistant.exe");
-
-        let enable = startup_registry_command(true, exe_path);
-        let disable = startup_registry_command(false, exe_path);
-
-        assert_eq!(
-            enable,
-            vec![
-                "add",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "Delta Force Craft Assistant",
-                "/t",
-                "REG_SZ",
-                "/d",
-                r#""C:\Program Files\Delta Force\assistant.exe""#,
-                "/f"
-            ]
-        );
-        assert_eq!(
-            disable,
-            vec![
-                "delete",
-                r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run",
-                "/v",
-                "Delta Force Craft Assistant",
-                "/f"
-            ]
-        );
-    }
-
-    #[test]
-    fn startup_registry_status_treats_delete_failure_as_error() {
-        assert!(startup_registry_status_result(false, true).is_ok());
-        assert!(startup_registry_status_result(false, false).is_err());
-        assert!(startup_registry_status_result(true, false).is_err());
-    }
-
-    #[test]
-    fn startup_registry_value_controls_startup_status() {
-        assert!(startup_registry_value_to_enabled(Some(
-            r#""C:\Program Files\Delta Force\assistant.exe""#
-        )));
-        assert!(!startup_registry_value_to_enabled(Some("")));
-        assert!(!startup_registry_value_to_enabled(None));
     }
 }

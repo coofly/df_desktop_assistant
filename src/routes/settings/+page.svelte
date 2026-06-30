@@ -1,23 +1,31 @@
 <script lang="ts">
+  // 文件说明：设置窗口负责刷新频率、自启动、透明度和日志入口配置。
   import { invoke } from "@tauri-apps/api/core";
 
+  // 设置窗口读写的助手设置结构。
   type AssistantSettings = {
     refreshIntervalMinutes: number;
     launchOnStartup: boolean;
     mainWindowOpacityPercent: number;
   };
 
+  // 设置窗口在预览或读取失败时使用的默认值。
   const defaultSettings: AssistantSettings = {
     refreshIntervalMinutes: 5,
     launchOnStartup: false,
     mainWindowOpacityPercent: 5
   };
 
+  // 保存当前设置表单值。
   let settings = $state<AssistantSettings>(defaultSettings);
+  // 标记设置是否正在保存。
   let saving = $state(false);
+  // 保存设置窗口错误提示。
   let error = $state("");
+  // 保存后端返回的日志文件路径。
   let logFilePath = $state("");
 
+  // 从完整路径中提取日志文件名。
   function logFileName() {
     if (!logFilePath) {
       return "仅在桌面应用内可用";
@@ -26,6 +34,7 @@
     return logFilePath.split(/[\\/]/).pop() || logFilePath;
   }
 
+  // 将刷新间隔限制在允许范围内。
   function clampInterval(value: number) {
     if (Number.isNaN(value)) {
       return defaultSettings.refreshIntervalMinutes;
@@ -34,6 +43,7 @@
     return Math.min(60, Math.max(1, Math.round(value)));
   }
 
+  // 将面板透明度限制在允许范围内。
   function clampOpacity(value: number) {
     if (Number.isNaN(value)) {
       return defaultSettings.mainWindowOpacityPercent;
@@ -42,6 +52,7 @@
     return Math.min(100, Math.max(5, Math.round(value)));
   }
 
+  // 将设置页日志转发给 Tauri 后端。
   async function writeLog(message: string) {
     try {
       await invoke("write_frontend_log", { source: "设置页", message });
@@ -50,6 +61,7 @@
     }
   }
 
+  // 从后端加载当前设置。
   async function loadSettings() {
     try {
       settings = await invoke<AssistantSettings>("get_settings");
@@ -59,6 +71,7 @@
     }
   }
 
+  // 保存设置并关闭设置窗口。
   async function saveSettings() {
     saving = true;
     error = "";
@@ -83,6 +96,7 @@
     }
   }
 
+  // 从后端读取日志文件路径。
   async function loadLogFilePath() {
     try {
       logFilePath = await invoke<string>("get_log_file_path");
@@ -91,6 +105,7 @@
     }
   }
 
+  // 启动设置窗口拖动。
   async function beginSettingsDrag(event: PointerEvent) {
     if (event.button !== 0) {
       return;
@@ -103,6 +118,7 @@
     }
   }
 
+  // 关闭设置窗口。
   async function closeSettings() {
     try {
       await invoke("close_settings_window");
@@ -111,6 +127,7 @@
     }
   }
 
+  // 打开日志文件所在文件夹。
   async function openLogFolder() {
     try {
       await invoke("open_log_folder");

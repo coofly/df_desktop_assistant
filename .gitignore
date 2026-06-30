@@ -1,3 +1,4 @@
+# 文件说明：忽略前端、Tauri 和本地临时开发产物。
 .DS_Store
 node_modules
 /build

@@ -1,3 +1,5 @@
+//! 封装 kkrb.net 实时推荐数据的会话获取、缓存和解析。
+
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE, ORIGIN, REFERER, SET_COOKIE};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -7,7 +9,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::{app_log, CraftRecommendation};
+use crate::{app_log, models::CraftRecommendation};
 
 const KKRBR_BASE_URL: &str = "https://www.kkrb.net";
 const USER_AGENT: &str = concat!(
@@ -18,6 +20,7 @@ const SESSION_CACHE_FILE: &str = "kkrb_session.json";
 const REQUEST_TIMEOUT_SECONDS: u64 = 20;
 const CONNECT_TIMEOUT_SECONDS: u64 = 8;
 
+/// 持有 kkrb HTTP 客户端和会话缓存。
 #[derive(Debug)]
 pub struct KkrbClient {
     client: reqwest::blocking::Client,
@@ -25,12 +28,14 @@ pub struct KkrbClient {
     session: Mutex<Option<KkrbSession>>,
 }
 
+/// 表示一次 kkrb 推荐数据获取结果。
 #[derive(Debug)]
 pub(crate) struct KkrbFetchResult {
     pub(crate) recommendations: Vec<CraftRecommendation>,
     pub(crate) session_source: KkrbSessionSource,
 }
 
+/// 标识本次 kkrb 会话来源。
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum KkrbSessionSource {
     Memory,
@@ -39,6 +44,7 @@ pub(crate) enum KkrbSessionSource {
 }
 
 impl KkrbSessionSource {
+    /// 返回会话来源的中文日志标签。
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Memory => "内存 session",
@@ -48,6 +54,7 @@ impl KkrbSessionSource {
     }
 }
 
+/// 缓存 kkrb 请求所需的 PHP session 和数据版本。
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KkrbSession {
@@ -56,6 +63,7 @@ struct KkrbSession {
     saved_at_unix_seconds: u64,
 }
 
+/// 对应 kkrb getMenu 接口响应。
 #[derive(Debug, Deserialize)]
 struct MenuResponse {
     code: i32,
@@ -64,6 +72,7 @@ struct MenuResponse {
     built_ver: Option<String>,
 }
 
+/// 对应 kkrb getOVData 概览接口响应。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OverviewResponse {
@@ -72,14 +81,17 @@ struct OverviewResponse {
     data: Option<OverviewData>,
 }
 
+/// 承载特勤处制作产物数据块。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OverviewData {
     sph_data: SwatProductData,
 }
 
+/// 按制作台键名索引 kkrb 产物数据。
 type SwatProductData = std::collections::HashMap<String, SwatProductItem>;
 
+/// 表示 kkrb 单个制作台产物条目。
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SwatProductItem {
@@ -94,12 +106,14 @@ struct SwatProductItem {
 }
 
 impl Default for KkrbClient {
+    /// 使用默认会话缓存路径创建客户端。
     fn default() -> Self {
         Self::new(default_session_cache_path())
     }
 }
 
 impl KkrbClient {
+    /// 使用指定会话缓存路径创建客户端。
     fn new(session_cache_path: PathBuf) -> Self {
         app_log::debug(format!(
             "初始化 kkrb 客户端，会话缓存路径：{}",
@@ -113,6 +127,7 @@ impl KkrbClient {
         }
     }
 
+    /// 获取实时推荐并自动回收可用会话。
     pub fn fetch_live_recommendations(&self) -> Result<KkrbFetchResult, String> {
         app_log::debug("开始获取 kkrb 实时制作推荐");
 
@@ -153,6 +168,7 @@ impl KkrbClient {
         })
     }
 
+    /// 尝试从内存或磁盘读取可复用会话。
     fn cached_session(&self) -> Option<(KkrbSession, KkrbSessionSource)> {
         if let Some(session) = self
             .session
@@ -182,6 +198,7 @@ impl KkrbClient {
         Some((session, KkrbSessionSource::LocalFile))
     }
 
+    /// 请求首页和菜单接口初始化新会话。
     fn initialize_session(&self) -> Result<KkrbSession, String> {
         app_log::debug("开始初始化 kkrb 会话：请求首页");
         let home_response = self
@@ -242,6 +259,7 @@ impl KkrbClient {
         Ok(session)
     }
 
+    /// 使用已有会话请求并解析推荐数据。
     fn fetch_with_session(
         &self,
         session: &KkrbSession,
@@ -296,6 +314,7 @@ impl KkrbClient {
     }
 }
 
+/// 构建带浏览器请求头和超时设置的 HTTP 客户端。
 fn build_client() -> Result<reqwest::blocking::Client, String> {
     app_log::debug("开始构建 kkrb HTTP 客户端");
     let mut headers = HeaderMap::new();
@@ -319,6 +338,7 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
         .map_err(|error| error.to_string())
 }
 
+/// 计算 kkrb 会话缓存文件路径。
 fn default_session_cache_path() -> PathBuf {
     let base_dir = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -330,6 +350,7 @@ fn default_session_cache_path() -> PathBuf {
         .join(SESSION_CACHE_FILE)
 }
 
+/// 从响应头集合中提取 PHPSESSID。
 fn php_session_id_from_headers(headers: &HeaderMap) -> Option<String> {
     headers
         .get_all(SET_COOKIE)
@@ -338,6 +359,7 @@ fn php_session_id_from_headers(headers: &HeaderMap) -> Option<String> {
         .find_map(php_session_id_from_set_cookie)
 }
 
+/// 从单条 Set-Cookie 中提取 PHPSESSID。
 fn php_session_id_from_set_cookie(set_cookie: &str) -> Option<String> {
     let cookie = set_cookie.split(';').next()?.trim();
     cookie
@@ -346,10 +368,12 @@ fn php_session_id_from_set_cookie(set_cookie: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// 生成携带 PHPSESSID 的 Cookie 请求头。
 fn session_cookie_header(php_session_id: &str) -> String {
     format!("PHPSESSID={php_session_id}")
 }
 
+/// 从磁盘读取并校验 kkrb 会话缓存。
 fn read_session_cache(path: &Path) -> Result<KkrbSession, String> {
     app_log::debug(format!("准备读取 kkrb 会话缓存：{}", path.display()));
     let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
@@ -363,6 +387,7 @@ fn read_session_cache(path: &Path) -> Result<KkrbSession, String> {
     Ok(session)
 }
 
+/// 将 kkrb 会话缓存写入磁盘。
 fn write_session_cache(path: &Path, session: &KkrbSession) -> Result<(), String> {
     app_log::debug(format!("准备写入 kkrb 会话缓存：{}", path.display()));
     if let Some(parent) = path.parent() {
@@ -373,6 +398,7 @@ fn write_session_cache(path: &Path, session: &KkrbSession) -> Result<(), String>
     fs::write(path, contents).map_err(|error| error.to_string())
 }
 
+/// 返回当前 Unix 秒级时间戳。
 fn unix_timestamp_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -380,6 +406,7 @@ fn unix_timestamp_now() -> u64 {
         .unwrap_or_default()
 }
 
+/// 将 kkrb 概览 JSON 标准化为前端推荐列表。
 pub fn normalize_swat_recommendations(json: &str) -> Result<Vec<CraftRecommendation>, String> {
     app_log::debug("开始解析 kkrb 特勤处制作推荐 JSON");
     let response: OverviewResponse =
@@ -418,6 +445,7 @@ pub fn normalize_swat_recommendations(json: &str) -> Result<Vec<CraftRecommendat
     Ok(recommendations)
 }
 
+/// 根据制作台名称推断产物分类。
 fn category_for_station(station: &str) -> &'static str {
     match station {
         "技术中心" => "工具",
@@ -428,6 +456,7 @@ fn category_for_station(station: &str) -> &'static str {
     }
 }
 
+/// 根据物品品级映射前端强调色。
 fn accent_for_grade(grade: u8) -> &'static str {
     match grade {
         6 => "#a84d50",
@@ -439,6 +468,7 @@ fn accent_for_grade(grade: u8) -> &'static str {
     }
 }
 
+/// 返回制作台在主面板中的固定排序。
 fn station_rank(station: &str) -> usize {
     match station {
         "技术中心" => 0,

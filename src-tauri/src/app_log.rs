@@ -1,3 +1,5 @@
+//! 初始化应用日志并提供带大小限制的日志写入器。
+
 use std::{
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
@@ -17,6 +19,7 @@ const LOG_TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 static LOG_PATH: OnceLock<PathBuf> = OnceLock::new();
 static LOG_GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
+/// 初始化标准输出和文件日志订阅器。
 pub fn init(app_data_dir: PathBuf) -> PathBuf {
     let log_dir = app_data_dir.join(LOG_DIR_NAME);
     let log_path = log_dir.join(LOG_FILE_NAME);
@@ -63,30 +66,37 @@ pub fn init(app_data_dir: PathBuf) -> PathBuf {
     log_path
 }
 
+/// 写入 info 级别日志。
 pub fn info(message: impl AsRef<str>) {
     tracing::info!("{}", message.as_ref());
 }
 
+/// 写入 warn 级别日志。
 pub fn warn(message: impl AsRef<str>) {
     tracing::warn!("{}", message.as_ref());
 }
 
+/// 写入 error 级别日志。
 pub fn error(message: impl AsRef<str>) {
     tracing::error!("{}", message.as_ref());
 }
 
+/// 写入 debug 级别日志。
 pub fn debug(message: impl AsRef<str>) {
     tracing::debug!("{}", message.as_ref());
 }
 
+/// 返回当前日志文件路径。
 pub fn log_path() -> Option<PathBuf> {
     LOG_PATH.get().cloned()
 }
 
+/// 创建本地时间格式化器。
 fn local_log_timer() -> ChronoLocal {
     ChronoLocal::new(LOG_TIME_FORMAT.to_string())
 }
 
+/// 写入日志时自动截断旧内容的文件写入器。
 struct SizeLimitedLogWriter {
     path: PathBuf,
     file: File,
@@ -94,6 +104,7 @@ struct SizeLimitedLogWriter {
 }
 
 impl SizeLimitedLogWriter {
+    /// 打开日志文件并在超限时先滚动一次。
     fn new(path: PathBuf) -> io::Result<Self> {
         let mut file = open_log_file(&path)?;
         let mut current_size = file.metadata()?.len();
@@ -108,6 +119,7 @@ impl SizeLimitedLogWriter {
         })
     }
 
+    /// 重新打开日志文件以恢复写入。
     fn reopen(&mut self) -> io::Result<()> {
         self.file = open_log_file(&self.path)?;
         self.current_size = self.file.metadata()?.len();
@@ -116,6 +128,7 @@ impl SizeLimitedLogWriter {
 }
 
 impl Write for SizeLimitedLogWriter {
+    /// 写入日志内容并在超限时保留最近内容。
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if self.current_size + buf.len() as u64 > MAX_LOG_FILE_BYTES {
             self.current_size = roll_log_file(&mut self.file, buf).or_else(|_| {
@@ -133,11 +146,13 @@ impl Write for SizeLimitedLogWriter {
         Ok(buf.len())
     }
 
+    /// 刷新日志文件缓冲区。
     fn flush(&mut self) -> io::Result<()> {
         self.file.flush()
     }
 }
 
+/// 打开或创建日志文件并移动到文件末尾。
 fn open_log_file(path: &Path) -> io::Result<File> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -152,6 +167,7 @@ fn open_log_file(path: &Path) -> io::Result<File> {
     Ok(file)
 }
 
+/// 滚动日志内容，确保文件大小不超过上限。
 fn roll_log_file(file: &mut File, incoming: &[u8]) -> io::Result<usize> {
     let max_len = MAX_LOG_FILE_BYTES as usize;
 
@@ -188,6 +204,7 @@ fn roll_log_file(file: &mut File, incoming: &[u8]) -> io::Result<usize> {
     Ok(bytes.len())
 }
 
+/// 找到下一行起点以避免截断半行日志。
 fn find_next_line_start(bytes: &[u8]) -> usize {
     match bytes.iter().position(|byte| *byte == b'\n') {
         Some(index) if index + 1 < bytes.len() => index + 1,
@@ -195,6 +212,7 @@ fn find_next_line_start(bytes: &[u8]) -> usize {
     }
 }
 
+/// 使用给定字节重写日志文件。
 fn rewrite_log_file(file: &mut File, bytes: &[u8]) -> io::Result<()> {
     file.set_len(0)?;
     file.seek(SeekFrom::Start(0))?;
@@ -210,6 +228,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
+    /// 验证日志超限时只保留最近内容。
     fn writer_keeps_recent_logs_when_size_limit_is_reached() {
         let path = test_log_path("rolling");
         let mut writer = SizeLimitedLogWriter::new(path.clone()).unwrap();
@@ -231,6 +250,7 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    /// 生成测试日志文件路径。
     fn test_log_path(name: &str) -> PathBuf {
         let millis = SystemTime::now()
             .duration_since(UNIX_EPOCH)

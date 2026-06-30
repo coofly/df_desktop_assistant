@@ -1,7 +1,9 @@
 <script lang="ts">
+  // 文件说明：主面板展示制作推荐、刷新状态和窗口锁定控制。
   import { invoke } from "@tauri-apps/api/core";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
+  // 制作推荐条目的前端展示结构。
   type CraftRecommendation = {
     id: string;
     station: string;
@@ -14,18 +16,21 @@
     accent: string;
   };
 
+  // 主面板一次推荐数据快照。
   type AssistantSnapshot = {
     locked: boolean;
     updatedAt: string;
     recommendations: CraftRecommendation[];
   };
 
+  // 主面板关心的助手设置结构。
   type AssistantSettings = {
     refreshIntervalMinutes: number;
     launchOnStartup: boolean;
     mainWindowOpacityPercent: number;
   };
 
+  // 浏览器预览或后端失败时使用的默认推荐快照。
   const previewSnapshot: AssistantSnapshot = {
     locked: false,
     updatedAt: "浏览器预览数据",
@@ -77,21 +82,33 @@
     ]
   };
 
+  // 当前面板展示的推荐快照。
   let snapshot = $state<AssistantSnapshot>(previewSnapshot);
+  // 标记推荐刷新是否处于加载中。
   let loading = $state(true);
+  // 保存当前页面错误提示。
   let error = $state("");
+  // 记录最近一次刷新时间文本。
   let refreshedAt = $state("未刷新");
+  // 记录加载失败的物品图片 ID。
   let failedImages = $state<Set<string>>(new Set());
+  // 保存自动刷新间隔分钟数。
   let refreshIntervalMinutes = $state(5);
+  // 保存主面板透明度百分比。
   let mainWindowOpacityPercent = $state(5);
+  // 防止自动刷新和手动刷新重入。
   let refreshInFlight = false;
+  // 保存自动刷新定时器句柄。
   let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
+  // 保存设置事件监听的取消函数。
   let unlistenSettings: UnlistenFn | undefined;
 
+  // 将数值格式化为中文分组数字。
   function formatNumber(value: number) {
     return new Intl.NumberFormat("zh-CN").format(value);
   }
 
+  // 返回当前时间的时分秒文本。
   function formatNow() {
     return new Intl.DateTimeFormat("zh-CN", {
       hour: "2-digit",
@@ -100,6 +117,7 @@
     }).format(new Date());
   }
 
+  // 将刷新间隔限制在允许范围内。
   function clampInterval(value: number) {
     if (Number.isNaN(value)) {
       return 5;
@@ -108,6 +126,7 @@
     return Math.min(60, Math.max(1, Math.round(value)));
   }
 
+  // 将面板透明度限制在允许范围内。
   function clampOpacity(value: number) {
     if (Number.isNaN(value)) {
       return 5;
@@ -116,10 +135,12 @@
     return Math.min(100, Math.max(5, Math.round(value)));
   }
 
+  // 生成主面板背景透明色。
   function panelBackground() {
     return `rgba(239, 240, 238, ${mainWindowOpacityPercent / 100})`;
   }
 
+  // 将前端日志转发给 Tauri 后端。
   async function writeLog(message: string) {
     try {
       await invoke("write_frontend_log", { source: "主面板", message });
@@ -128,6 +149,7 @@
     }
   }
 
+  // 按当前设置重建自动刷新定时器。
   function scheduleRefresh() {
     if (refreshTimer) {
       window.clearInterval(refreshTimer);
@@ -141,6 +163,7 @@
     );
   }
 
+  // 从后端加载制作推荐并处理失败兜底。
   async function loadRecommendations() {
     if (refreshInFlight) {
       writeLog("上一次制作推荐刷新仍在进行，本轮自动刷新已跳过");
@@ -167,6 +190,7 @@
     }
   }
 
+  // 从后端加载助手设置并启动自动刷新。
   async function loadSettings() {
     try {
       const settings = await invoke<AssistantSettings>("get_settings");
@@ -181,12 +205,14 @@
     scheduleRefresh();
   }
 
+  // 应用设置窗口广播过来的新设置。
   function applySettings(settings: AssistantSettings) {
     refreshIntervalMinutes = clampInterval(settings.refreshIntervalMinutes);
     mainWindowOpacityPercent = clampOpacity(settings.mainWindowOpacityPercent);
     scheduleRefresh();
   }
 
+  // 切换主窗口锁定状态。
   async function setLocked(locked: boolean) {
     try {
       const nextLocked = await invoke<boolean>("set_lock_state", { locked });
@@ -197,6 +223,7 @@
     }
   }
 
+  // 在未锁定时启动主窗口拖动。
   async function beginDrag(event: PointerEvent) {
     if (event.button !== 0) {
       return;
@@ -213,6 +240,7 @@
     }
   }
 
+  // 在未锁定时启动主窗口右下角缩放。
   async function beginResize(event: PointerEvent) {
     if (event.button !== 0) {
       return;
@@ -232,6 +260,7 @@
     }
   }
 
+  // 打开标题栏右键菜单。
   async function openTitleBarMenu(event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
@@ -246,6 +275,7 @@
     }
   }
 
+  // 标记指定物品图片加载失败。
   function markImageFailed(id: string) {
     failedImages = new Set([...failedImages, id]);
     writeLog(`物品图片加载失败，已显示文字占位：${id}`);

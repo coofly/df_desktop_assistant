@@ -1,3 +1,4 @@
+# 文件说明：定义 Tauri 后端 Rust crate、构建脚本和依赖。
 [package]
 name = "df_desktop_assistant"
 version = "0.1.0"
