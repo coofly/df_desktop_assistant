@@ -4,11 +4,13 @@
   type AssistantSettings = {
     refreshIntervalMinutes: number;
     launchOnStartup: boolean;
+    mainWindowOpacityPercent: number;
   };
 
   const defaultSettings: AssistantSettings = {
     refreshIntervalMinutes: 5,
-    launchOnStartup: false
+    launchOnStartup: false,
+    mainWindowOpacityPercent: 5
   };
 
   let settings = $state<AssistantSettings>(defaultSettings);
@@ -23,6 +25,14 @@
     }
 
     return Math.min(60, Math.max(1, Math.round(value)));
+  }
+
+  function clampOpacity(value: number) {
+    if (Number.isNaN(value)) {
+      return defaultSettings.mainWindowOpacityPercent;
+    }
+
+    return Math.min(100, Math.max(5, Math.round(value)));
   }
 
   async function writeLog(message: string) {
@@ -49,13 +59,15 @@
     error = "";
     settings = {
       ...settings,
-      refreshIntervalMinutes: clampInterval(settings.refreshIntervalMinutes)
+      refreshIntervalMinutes: clampInterval(settings.refreshIntervalMinutes),
+      mainWindowOpacityPercent: clampOpacity(settings.mainWindowOpacityPercent)
     };
 
     try {
       settings = await invoke<AssistantSettings>("save_settings", {
         refreshIntervalMinutes: settings.refreshIntervalMinutes,
-        launchOnStartup: settings.launchOnStartup
+        launchOnStartup: settings.launchOnStartup,
+        mainWindowOpacityPercent: settings.mainWindowOpacityPercent
       });
       status = "已保存";
     } catch (cause) {
@@ -134,6 +146,36 @@
       type="checkbox"
       bind:checked={settings.launchOnStartup}
     />
+  </section>
+
+  <section class="setting-row">
+    <div>
+      <label for="panel-opacity">面板透明度</label>
+      <p>当前 {settings.mainWindowOpacityPercent}%</p>
+    </div>
+    <div class="interval-control">
+      <input
+        id="panel-opacity"
+        type="range"
+        min="5"
+        max="100"
+        bind:value={settings.mainWindowOpacityPercent}
+      />
+      <input
+        aria-label="面板透明度百分比"
+        class="number-input"
+        type="number"
+        min="5"
+        max="100"
+        bind:value={settings.mainWindowOpacityPercent}
+        onblur={() =>
+          (settings = {
+            ...settings,
+            mainWindowOpacityPercent: clampOpacity(settings.mainWindowOpacityPercent)
+          })}
+      />
+      <span>%</span>
+    </div>
   </section>
 
   <section class="setting-row log-row">

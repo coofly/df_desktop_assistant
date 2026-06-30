@@ -19,7 +19,9 @@
         "minHeight": 220,
         "decorations": false,
         "resizable": false,
-        "alwaysOnTop": true
+        "alwaysOnTop": true,
+        "transparent": true,
+        "shadow": false
       }
     ],
     "security": {

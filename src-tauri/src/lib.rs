@@ -9,7 +9,7 @@ use std::{
     sync::Mutex,
 };
 use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder},
+    menu::{Menu, MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
     Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
@@ -28,6 +28,9 @@ const SETTINGS_UPDATED_EVENT: &str = "settings-updated";
 const MIN_REFRESH_INTERVAL_MINUTES: u16 = 1;
 const DEFAULT_REFRESH_INTERVAL_MINUTES: u16 = 5;
 const MAX_REFRESH_INTERVAL_MINUTES: u16 = 60;
+const MIN_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
+const DEFAULT_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
+const MAX_MAIN_WINDOW_OPACITY_PERCENT: u8 = 100;
 const APP_DATA_DIR_NAME: &str = "Delta Force Craft Assistant";
 
 #[derive(Clone, Debug, Serialize)]
@@ -57,22 +60,43 @@ struct AssistantSnapshot {
 struct AssistantSettings {
     refresh_interval_minutes: u16,
     launch_on_startup: bool,
+    main_window_opacity_percent: u8,
 }
 
 impl AssistantSettings {
-    fn new(refresh_interval_minutes: u16, launch_on_startup: bool) -> Self {
+    fn new(
+        refresh_interval_minutes: u16,
+        launch_on_startup: bool,
+        main_window_opacity_percent: u8,
+    ) -> Self {
         Self {
             refresh_interval_minutes: refresh_interval_minutes
                 .clamp(MIN_REFRESH_INTERVAL_MINUTES, MAX_REFRESH_INTERVAL_MINUTES),
             launch_on_startup,
+            main_window_opacity_percent: main_window_opacity_percent.clamp(
+                MIN_MAIN_WINDOW_OPACITY_PERCENT,
+                MAX_MAIN_WINDOW_OPACITY_PERCENT,
+            ),
         }
     }
 }
 
 impl Default for AssistantSettings {
     fn default() -> Self {
-        Self::new(DEFAULT_REFRESH_INTERVAL_MINUTES, false)
+        Self::new(
+            DEFAULT_REFRESH_INTERVAL_MINUTES,
+            false,
+            DEFAULT_MAIN_WINDOW_OPACITY_PERCENT,
+        )
     }
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredAssistantSettings {
+    refresh_interval_minutes: Option<u16>,
+    launch_on_startup: Option<bool>,
+    main_window_opacity_percent: Option<u8>,
 }
 
 struct AssistantState {
@@ -87,10 +111,11 @@ impl AssistantState {
     fn new(settings_path: PathBuf) -> Self {
         let settings = read_settings_file(&settings_path).unwrap_or_default();
         app_log::debug(format!(
-            "助手状态初始化完成，设置文件路径：{}，刷新间隔：{} 分钟，开机自启动：{}",
+            "助手状态初始化完成，设置文件路径：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
             settings_path.display(),
             settings.refresh_interval_minutes,
-            enabled_text(settings.launch_on_startup)
+            enabled_text(settings.launch_on_startup),
+            settings.main_window_opacity_percent
         ));
 
         Self {
@@ -141,26 +166,37 @@ fn read_settings_file(path: &Path) -> Result<AssistantSettings, String> {
 
     app_log::debug(format!("开始读取设置文件：{}", path.display()));
     let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let settings: AssistantSettings =
+    let stored_settings: StoredAssistantSettings =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let default_settings = AssistantSettings::default();
+    let settings = AssistantSettings::new(
+        stored_settings
+            .refresh_interval_minutes
+            .unwrap_or(default_settings.refresh_interval_minutes),
+        stored_settings
+            .launch_on_startup
+            .unwrap_or(default_settings.launch_on_startup),
+        stored_settings
+            .main_window_opacity_percent
+            .unwrap_or(default_settings.main_window_opacity_percent),
+    );
     app_log::debug(format!(
-        "设置文件读取成功，刷新间隔：{} 分钟，开机自启动：{}",
+        "设置文件读取成功，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
         settings.refresh_interval_minutes,
-        enabled_text(settings.launch_on_startup)
+        enabled_text(settings.launch_on_startup),
+        settings.main_window_opacity_percent
     ));
 
-    Ok(AssistantSettings::new(
-        settings.refresh_interval_minutes,
-        settings.launch_on_startup,
-    ))
+    Ok(settings)
 }
 
 fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), String> {
     app_log::debug(format!(
-        "开始写入设置文件：{}，刷新间隔：{} 分钟，开机自启动：{}",
+        "开始写入设置文件：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
         path.display(),
         settings.refresh_interval_minutes,
-        enabled_text(settings.launch_on_startup)
+        enabled_text(settings.launch_on_startup),
+        settings.main_window_opacity_percent
     ));
 
     if let Some(parent) = path.parent() {
@@ -290,14 +326,6 @@ fn mock_recommendations() -> Vec<CraftRecommendation> {
     ]
 }
 
-fn assistant_snapshot(locked: bool) -> AssistantSnapshot {
-    AssistantSnapshot {
-        locked,
-        updated_at: "本地 mock 数据".to_string(),
-        recommendations: mock_recommendations(),
-    }
-}
-
 fn snapshot_with_recommendations(
     locked: bool,
     updated_at: impl Into<String>,
@@ -378,12 +406,12 @@ fn get_lock_state(state: State<'_, AssistantState>) -> bool {
 }
 
 #[tauri::command]
-fn set_lock_state(state: State<'_, AssistantState>, locked: bool) -> AssistantSnapshot {
+fn set_lock_state(state: State<'_, AssistantState>, locked: bool) -> bool {
     app_log::info(format!(
         "窗口位置已{}",
         if locked { "锁定" } else { "解锁" }
     ));
-    assistant_snapshot(set_lock_value(&state, locked))
+    set_lock_value(&state, locked)
 }
 
 #[tauri::command]
@@ -394,9 +422,10 @@ fn get_settings(state: State<'_, AssistantState>) -> AssistantSettings {
         .expect("assistant settings lock poisoned")
         .clone();
     app_log::debug(format!(
-        "前端读取设置，刷新间隔：{} 分钟，开机自启动：{}",
+        "前端读取设置，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
         settings.refresh_interval_minutes,
-        enabled_text(settings.launch_on_startup)
+        enabled_text(settings.launch_on_startup),
+        settings.main_window_opacity_percent
     ));
     settings
 }
@@ -407,13 +436,19 @@ fn save_settings(
     state: State<'_, AssistantState>,
     refresh_interval_minutes: u16,
     launch_on_startup: bool,
+    main_window_opacity_percent: u8,
 ) -> Result<AssistantSettings, String> {
     app_log::debug(format!(
-        "前端请求保存设置，刷新间隔：{} 分钟，开机自启动：{}",
+        "前端请求保存设置，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
         refresh_interval_minutes,
-        enabled_text(launch_on_startup)
+        enabled_text(launch_on_startup),
+        main_window_opacity_percent
     ));
-    let settings = AssistantSettings::new(refresh_interval_minutes, launch_on_startup);
+    let settings = AssistantSettings::new(
+        refresh_interval_minutes,
+        launch_on_startup,
+        main_window_opacity_percent,
+    );
 
     apply_launch_on_startup(settings.launch_on_startup)?;
     write_settings_file(&state.settings_path, &settings)?;
@@ -423,9 +458,10 @@ fn save_settings(
         .expect("assistant settings lock poisoned") = settings.clone();
     let _ = app.emit_to(MAIN_WINDOW_LABEL, SETTINGS_UPDATED_EVENT, settings.clone());
     app_log::info(format!(
-        "设置保存成功，刷新间隔：{} 分钟，开机自启动：{}",
+        "设置保存成功，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
         settings.refresh_interval_minutes,
-        enabled_text(settings.launch_on_startup)
+        enabled_text(settings.launch_on_startup),
+        settings.main_window_opacity_percent
     ));
 
     Ok(settings)
@@ -523,8 +559,8 @@ fn open_settings_window(app: &tauri::AppHandle) {
         WebviewUrl::App("/settings".into()),
     )
     .title("设置")
-    .inner_size(360.0, 260.0)
-    .min_inner_size(320.0, 240.0)
+    .inner_size(360.0, 340.0)
+    .min_inner_size(320.0, 320.0)
     .resizable(false)
     .always_on_top(true)
     .build()
@@ -539,45 +575,69 @@ fn open_settings_window(app: &tauri::AppHandle) {
     }
 }
 
-fn create_tray(app: &tauri::App) -> tauri::Result<()> {
-    app_log::debug("开始创建系统托盘图标和菜单");
-    let show_hide = MenuItemBuilder::with_id(TRAY_TOGGLE, "显示/隐藏窗口").build(app)?;
-    let settings = MenuItemBuilder::with_id(TRAY_SETTINGS, "设置").build(app)?;
-    let lock = MenuItemBuilder::with_id(TRAY_LOCK, "锁定位置").build(app)?;
-    let unlock = MenuItemBuilder::with_id(TRAY_UNLOCK, "解锁位置").build(app)?;
-    let quit = MenuItemBuilder::with_id(TRAY_QUIT, "退出程序").build(app)?;
+fn create_assistant_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu<R>> {
+    let show_hide = MenuItemBuilder::with_id(TRAY_TOGGLE, "显示/隐藏窗口").build(manager)?;
+    let settings = MenuItemBuilder::with_id(TRAY_SETTINGS, "设置").build(manager)?;
+    let lock = MenuItemBuilder::with_id(TRAY_LOCK, "锁定位置").build(manager)?;
+    let unlock = MenuItemBuilder::with_id(TRAY_UNLOCK, "解锁位置").build(manager)?;
+    let quit = MenuItemBuilder::with_id(TRAY_QUIT, "退出程序").build(manager)?;
 
-    let menu = MenuBuilder::new(app)
+    MenuBuilder::new(manager)
         .items(&[&show_hide, &settings, &lock, &unlock])
         .separator()
         .item(&quit)
-        .build()?;
+        .build()
+}
 
+fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
+    match id {
+        TRAY_TOGGLE => toggle_main_window(app),
+        TRAY_SETTINGS => open_settings_window(app),
+        TRAY_LOCK => {
+            app_log::info("菜单触发：锁定窗口位置");
+            let state = app.state::<AssistantState>();
+            set_lock_value(&state, true);
+        }
+        TRAY_UNLOCK => {
+            app_log::info("菜单触发：解锁窗口位置");
+            let state = app.state::<AssistantState>();
+            set_lock_value(&state, false);
+            show_main_window(app);
+        }
+        TRAY_QUIT => {
+            app_log::info("菜单触发：退出程序");
+            app.exit(0)
+        }
+        unknown => app_log::warn(format!("收到未知菜单事件：{unknown}")),
+    }
+}
+
+#[tauri::command]
+fn show_tray_menu_at_title_bar(
+    app: tauri::AppHandle,
+    window: tauri::Window,
+    x: f64,
+    y: f64,
+) -> Result<(), String> {
+    let menu = create_assistant_menu(&app).map_err(|error| error.to_string())?;
+    app_log::debug(format!("标题栏右键打开托盘菜单：x={x:.0}, y={y:.0}"));
+    window
+        .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
+        .map_err(|error| {
+            app_log::warn(format!("标题栏右键菜单打开失败：{error}"));
+            error.to_string()
+        })
+}
+
+fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+    app_log::debug("开始创建系统托盘图标和菜单");
+    let menu = create_assistant_menu(app)?;
     let icon = app.default_window_icon().cloned();
     let mut tray_builder = TrayIconBuilder::new()
         .menu(&menu)
         .show_menu_on_left_click(true)
         .tooltip("三角洲行动特勤处制作助手")
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            TRAY_TOGGLE => toggle_main_window(app),
-            TRAY_SETTINGS => open_settings_window(app),
-            TRAY_LOCK => {
-                app_log::info("托盘菜单触发：锁定窗口位置");
-                let state = app.state::<AssistantState>();
-                set_lock_value(&state, true);
-            }
-            TRAY_UNLOCK => {
-                app_log::info("托盘菜单触发：解锁窗口位置");
-                let state = app.state::<AssistantState>();
-                set_lock_value(&state, false);
-                show_main_window(app);
-            }
-            TRAY_QUIT => {
-                app_log::info("托盘菜单触发：退出程序");
-                app.exit(0)
-            }
-            unknown => app_log::warn(format!("收到未知托盘菜单事件：{unknown}")),
-        });
+        .on_menu_event(|app, event| handle_assistant_menu_event(app, event.id().as_ref()));
 
     if let Some(icon) = icon {
         tray_builder = tray_builder.icon(icon);
@@ -620,6 +680,7 @@ pub fn run() {
             get_settings,
             save_settings,
             start_window_drag,
+            show_tray_menu_at_title_bar,
             write_frontend_log,
             get_log_file_path
         ])
@@ -644,11 +705,38 @@ mod tests {
     }
 
     #[test]
-    fn assistant_snapshot_carries_lock_state() {
-        let snapshot = assistant_snapshot(true);
+    fn lock_state_update_does_not_touch_cached_recommendations() {
+        let state = AssistantState::default();
+        let cached = vec![CraftRecommendation {
+            id: "cached-with-image".to_string(),
+            station: "技术中心".to_string(),
+            category: "工具".to_string(),
+            item_name: "带图标物品".to_string(),
+            image_url: Some("https://example.test/item.png".to_string()),
+            current_profit: 100,
+            ideal_price: 200,
+            sell_time: "晚上11点".to_string(),
+            accent: "#a84d50".to_string(),
+        }];
 
-        assert!(snapshot.locked);
-        assert_eq!(snapshot.recommendations.len(), 4);
+        *state
+            .cached_recommendations
+            .lock()
+            .expect("assistant cache lock poisoned") = Some(cached.clone());
+        let locked = set_lock_value(&state, true);
+        let stored = state
+            .cached_recommendations
+            .lock()
+            .expect("assistant cache lock poisoned")
+            .clone()
+            .expect("cached recommendations remain available");
+
+        assert!(locked);
+        assert_eq!(stored[0].id, cached[0].id);
+        assert_eq!(
+            stored[0].image_url.as_deref(),
+            Some("https://example.test/item.png")
+        );
     }
 
     #[test]
@@ -657,16 +745,49 @@ mod tests {
 
         assert_eq!(settings.refresh_interval_minutes, 5);
         assert!(!settings.launch_on_startup);
+        assert_eq!(settings.main_window_opacity_percent, 5);
     }
 
     #[test]
     fn settings_clamps_refresh_interval() {
-        let low = AssistantSettings::new(0, false);
-        let high = AssistantSettings::new(99, true);
+        let low = AssistantSettings::new(0, false, 85);
+        let high = AssistantSettings::new(99, true, 85);
 
         assert_eq!(low.refresh_interval_minutes, 1);
         assert_eq!(high.refresh_interval_minutes, 60);
         assert!(high.launch_on_startup);
+    }
+
+    #[test]
+    fn settings_clamps_main_window_opacity() {
+        let low = AssistantSettings::new(5, false, 1);
+        let high = AssistantSettings::new(5, false, 101);
+
+        assert_eq!(low.main_window_opacity_percent, 5);
+        assert_eq!(high.main_window_opacity_percent, 100);
+    }
+
+    #[test]
+    fn settings_file_supports_legacy_without_opacity() {
+        let path = std::env::temp_dir().join(format!(
+            "df-legacy-settings-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        fs::write(
+            &path,
+            r#"{"refreshIntervalMinutes":12,"launchOnStartup":true}"#,
+        )
+        .expect("legacy settings file writes");
+
+        let loaded = read_settings_file(&path).expect("legacy settings file reads");
+        fs::remove_file(path).expect("test settings file can be removed");
+
+        assert_eq!(loaded.refresh_interval_minutes, 12);
+        assert!(loaded.launch_on_startup);
+        assert_eq!(loaded.main_window_opacity_percent, 5);
     }
 
     #[test]
@@ -678,7 +799,7 @@ mod tests {
                 .expect("system time before unix epoch")
                 .as_nanos()
         ));
-        let settings = AssistantSettings::new(12, true);
+        let settings = AssistantSettings::new(12, true, 72);
 
         write_settings_file(&path, &settings).expect("settings file writes");
         let loaded = read_settings_file(&path).expect("settings file reads");

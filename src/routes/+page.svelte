@@ -23,11 +23,8 @@
   type AssistantSettings = {
     refreshIntervalMinutes: number;
     launchOnStartup: boolean;
+    mainWindowOpacityPercent: number;
   };
-
-  type SortMode = "profit" | "station";
-
-  const stationOrder = ["技术中心", "工作台", "制药台", "防具台"];
 
   const previewSnapshot: AssistantSnapshot = {
     locked: false,
@@ -81,24 +78,14 @@
   };
 
   let snapshot = $state<AssistantSnapshot>(previewSnapshot);
-  let sortMode = $state<SortMode>("profit");
   let loading = $state(true);
   let error = $state("");
   let refreshedAt = $state("未刷新");
   let failedImages = $state<Set<string>>(new Set());
   let refreshIntervalMinutes = $state(5);
+  let mainWindowOpacityPercent = $state(5);
   let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
   let unlistenSettings: UnlistenFn | undefined;
-
-  const sortedRecommendations = $derived(
-    [...snapshot.recommendations].sort((left, right) => {
-      if (sortMode === "profit") {
-        return right.currentProfit - left.currentProfit;
-      }
-
-      return stationOrder.indexOf(left.station) - stationOrder.indexOf(right.station);
-    })
-  );
 
   function formatNumber(value: number) {
     return new Intl.NumberFormat("zh-CN").format(value);
@@ -118,6 +105,18 @@
     }
 
     return Math.min(60, Math.max(1, Math.round(value)));
+  }
+
+  function clampOpacity(value: number) {
+    if (Number.isNaN(value)) {
+      return 5;
+    }
+
+    return Math.min(100, Math.max(5, Math.round(value)));
+  }
+
+  function panelBackground() {
+    return `rgba(239, 240, 238, ${mainWindowOpacityPercent / 100})`;
   }
 
   async function writeLog(message: string) {
@@ -162,8 +161,10 @@
     try {
       const settings = await invoke<AssistantSettings>("get_settings");
       refreshIntervalMinutes = clampInterval(settings.refreshIntervalMinutes);
+      mainWindowOpacityPercent = clampOpacity(settings.mainWindowOpacityPercent);
     } catch {
       refreshIntervalMinutes = 5;
+      mainWindowOpacityPercent = 5;
       writeLog("设置加载失败，使用默认刷新间隔：5 分钟");
     }
 
@@ -172,19 +173,25 @@
 
   function applySettings(settings: AssistantSettings) {
     refreshIntervalMinutes = clampInterval(settings.refreshIntervalMinutes);
+    mainWindowOpacityPercent = clampOpacity(settings.mainWindowOpacityPercent);
     scheduleRefresh();
   }
 
   async function setLocked(locked: boolean) {
     try {
-      snapshot = await invoke<AssistantSnapshot>("set_lock_state", { locked });
+      const nextLocked = await invoke<boolean>("set_lock_state", { locked });
+      snapshot = { ...snapshot, locked: nextLocked };
     } catch {
       snapshot = { ...snapshot, locked };
       writeLog(`锁定状态更新失败，预览状态改为：${locked ? "锁定" : "解锁"}`);
     }
   }
 
-  async function beginDrag() {
+  async function beginDrag(event: PointerEvent) {
+    if (event.button !== 0) {
+      return;
+    }
+
     if (snapshot.locked) {
       return;
     }
@@ -193,6 +200,20 @@
       await invoke("start_window_drag");
     } catch {
       // Browser preview cannot call the Tauri window command.
+    }
+  }
+
+  async function openTitleBarMenu(event: MouseEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      await invoke("show_tray_menu_at_title_bar", {
+        x: event.clientX,
+        y: event.clientY
+      });
+    } catch {
+      // Browser preview cannot call the Tauri menu command.
     }
   }
 
@@ -233,7 +254,7 @@
   <title>三角洲行动特勤处制作助手</title>
 </svelte:head>
 
-<main class="assistant-shell">
+<main class="assistant-shell" style={`--panel-bg: ${panelBackground()}`}>
   <header
     class:locked={snapshot.locked}
     class="top-bar"
@@ -241,6 +262,7 @@
     tabindex="0"
     aria-label="拖动窗口"
     onpointerdown={beginDrag}
+    oncontextmenu={openTitleBarMenu}
   >
     <div class="title-block">
       <span class="rail"></span>
@@ -257,26 +279,41 @@
       onpointerdown={(event) => event.stopPropagation()}
     >
       <button
-        class:active={sortMode === "profit"}
+        class="icon-button"
         type="button"
-        title="按利润排序"
-        onclick={() => {
-          sortMode = sortMode === "profit" ? "station" : "profit";
-          writeLog(`排序方式切换为：${sortMode === "profit" ? "小时利润" : "工作台顺序"}`);
-        }}
+        title="刷新推荐"
+        aria-label="刷新推荐"
+        onclick={loadRecommendations}
+        disabled={loading}
       >
-        {sortMode === "profit" ? "小时利润" : "工作台序"}
-      </button>
-      <button type="button" title="刷新推荐" onclick={loadRecommendations} disabled={loading}>
-        {loading ? "刷新中" : "刷新"}
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M21 12a9 9 0 0 1-15.3 6.4" />
+          <path d="M3 12A9 9 0 0 1 18.3 5.6" />
+          <path d="M18 2v4h-4" />
+          <path d="M6 22v-4h4" />
+        </svg>
       </button>
       <button
         class:locked={snapshot.locked}
+        class="icon-button"
         type="button"
         title={snapshot.locked ? "解锁窗口位置" : "锁定窗口位置"}
+        aria-label={snapshot.locked ? "解锁窗口位置" : "锁定窗口位置"}
         onclick={() => setLocked(!snapshot.locked)}
       >
-        {snapshot.locked ? "已锁定" : "未锁定"}
+        {#if snapshot.locked}
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="10" rx="1.5" />
+            <path d="M8 11V7a4 4 0 0 1 8 0v4" />
+            <path d="M12 15v2" />
+          </svg>
+        {:else}
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="10" rx="1.5" />
+            <path d="M8 11V7a4 4 0 0 1 7.2-2.4" />
+            <path d="M12 15v2" />
+          </svg>
+        {/if}
       </button>
     </div>
   </header>
@@ -286,7 +323,7 @@
   {/if}
 
   <section class="recommendations" aria-label="制作推荐列表">
-    {#each sortedRecommendations as recommendation}
+    {#each snapshot.recommendations as recommendation}
       <article class="card">
         <div class="meta">
           <span class="station">{recommendation.station}</span>
@@ -340,7 +377,7 @@
     margin: 0;
     min-width: 860px;
     overflow: hidden;
-    color: #202426;
+    color: #17191a;
     background: transparent;
     font-family:
       "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
@@ -354,9 +391,9 @@
     width: 100vw;
     height: 100vh;
     padding: 10px 12px 12px;
-    background: #eef0ef;
-    border: 1px solid rgb(23 34 31 / 10%);
-    box-shadow: 0 18px 44px rgb(16 24 22 / 18%);
+    background: var(--panel-bg, rgb(239 240 238 / 85%));
+    border: 1px solid #303336;
+    box-shadow: none;
   }
 
   .top-bar {
@@ -365,9 +402,12 @@
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    padding: 2px 0 10px;
+    margin-bottom: 10px;
+    border: 1px solid #50545a;
+    padding: 7px 8px;
     cursor: grab;
     user-select: none;
+    background: rgb(255 255 255 / 42%);
   }
 
   .top-bar.locked {
@@ -382,9 +422,10 @@
   }
 
   .rail {
-    width: 4px;
-    height: 40px;
-    background: #20b47c;
+    width: 8px;
+    height: 32px;
+    border: 1px solid #303336;
+    background: rgb(23 25 26 / 12%);
   }
 
   h1 {
@@ -397,7 +438,7 @@
 
   p {
     margin: 4px 0 0;
-    color: #66706d;
+    color: #565b60;
     font-size: 12px;
     line-height: 1.2;
   }
@@ -408,29 +449,43 @@
     gap: 8px;
   }
 
-  button {
-    min-width: 72px;
-    height: 28px;
-    border: 1px solid rgb(32 180 124 / 22%);
-    border-radius: 999px;
-    padding: 0 12px;
-    color: #14734f;
-    background: #ffffff;
+  .icon-button {
+    display: grid;
+    width: 30px;
+    height: 30px;
+    min-width: 30px;
+    place-items: center;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    color: #191c1f;
+    background: transparent;
     box-shadow: none;
     cursor: pointer;
   }
 
-  button:hover {
-    border-color: rgb(32 180 124 / 44%);
+  .icon-button svg {
+    display: block;
+    width: 18px;
+    height: 18px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: square;
+    stroke-linejoin: miter;
+    stroke-width: 1.8;
   }
 
-  button.active,
-  button.locked {
+  .icon-button:hover {
+    color: #000000;
+    background: rgb(23 25 26 / 8%);
+  }
+
+  .icon-button.locked {
     color: #ffffff;
-    background: #20b47c;
+    background: #25282b;
   }
 
-  button:disabled {
+  .icon-button:disabled {
     cursor: wait;
     opacity: 0.62;
   }
@@ -440,7 +495,7 @@
     top: 50px;
     right: 14px;
     margin: 0;
-    color: #8d5a2e;
+    color: #4b3a2b;
     font-size: 12px;
   }
 
@@ -455,10 +510,10 @@
     grid-template-columns: minmax(124px, 1fr) 118px;
     min-height: 140px;
     overflow: hidden;
-    border: 1px solid rgb(15 23 20 / 6%);
-    border-radius: 8px;
-    background: #ffffff;
-    box-shadow: 0 5px 14px rgb(22 30 27 / 12%);
+    border: 1px solid #50545a;
+    border-radius: 0;
+    background: rgb(255 255 255 / 50%);
+    box-shadow: none;
   }
 
   .meta,
@@ -477,15 +532,16 @@
   .station {
     font-size: 13px;
     font-weight: 700;
-    color: #333b38;
+    color: #222528;
   }
 
   .category {
     width: fit-content;
-    border-radius: 999px;
+    border: 1px solid #6b7075;
+    border-radius: 0;
     padding: 2px 8px;
-    color: #49615a;
-    background: #edf3f1;
+    color: #33383d;
+    background: rgb(255 255 255 / 42%);
     font-size: 11px;
   }
 
@@ -507,11 +563,11 @@
   }
 
   dt {
-    color: #37413d;
+    color: #3b4045;
   }
 
   dd {
-    color: #1e2925;
+    color: #151719;
     font-weight: 800;
   }
 
@@ -525,10 +581,9 @@
     gap: 10px;
     min-width: 0;
     padding: 12px;
+    border-left: 1px solid #50545a;
     color: #ffffff;
-    background:
-      radial-gradient(circle at 50% 34%, rgb(255 255 255 / 24%), transparent 35%),
-      var(--accent);
+    background: var(--accent);
   }
 
   .visual-slot {
@@ -544,7 +599,8 @@
     width: 58px;
     height: 42px;
     place-items: center;
-    border-radius: 5px;
+    border: 1px solid #4b5055;
+    border-radius: 0;
     color: rgb(255 255 255 / 88%);
     background: rgb(12 18 16 / 22%);
     font-weight: 900;
@@ -555,7 +611,7 @@
     width: 72px;
     height: 72px;
     object-fit: contain;
-    filter: drop-shadow(0 8px 10px rgb(0 0 0 / 20%));
+    filter: none;
   }
 
 
