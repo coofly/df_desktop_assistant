@@ -759,6 +759,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",
+ "tauri-runtime",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",

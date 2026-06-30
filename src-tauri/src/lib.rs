@@ -446,12 +446,18 @@ fn get_lock_state(state: State<'_, AssistantState>) -> bool {
 }
 
 #[tauri::command]
-fn set_lock_state(state: State<'_, AssistantState>, locked: bool) -> bool {
+fn set_lock_state(
+    app: tauri::AppHandle,
+    state: State<'_, AssistantState>,
+    locked: bool,
+) -> bool {
     app_log::info(format!(
         "窗口位置已{}",
         if locked { "锁定" } else { "解锁" }
     ));
-    set_lock_value(&state, locked)
+    let locked = set_lock_value(&state, locked);
+    apply_main_window_lock_state(&app, locked);
+    locked
 }
 
 #[tauri::command]
@@ -522,6 +528,25 @@ fn start_window_drag(
         app_log::warn(format!("窗口拖动启动失败：{error}"));
         error.to_string()
     })
+}
+
+#[tauri::command]
+fn start_window_resize(
+    window: tauri::Window,
+    state: State<'_, AssistantState>,
+) -> Result<(), String> {
+    if lock_value(&state) {
+        app_log::debug("窗口已锁定，本次调整大小请求被忽略");
+        return Ok(());
+    }
+
+    app_log::debug("开始从右下角调整主窗口大小");
+    window
+        .start_resize_dragging(tauri_runtime::ResizeDirection::SouthEast)
+        .map_err(|error| {
+            app_log::warn(format!("窗口调整大小启动失败：{error}"));
+            error.to_string()
+        })
 }
 
 #[tauri::command]
@@ -621,6 +646,16 @@ fn toggle_main_window(app: &tauri::AppHandle) {
         }
     } else {
         app_log::warn("托盘菜单切换主窗口失败：没有找到主窗口");
+    }
+}
+
+fn apply_main_window_lock_state(app: &tauri::AppHandle, locked: bool) {
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        if let Err(error) = window.set_resizable(!locked) {
+            app_log::warn(format!("更新主窗口缩放状态失败：{error}"));
+        }
+    } else {
+        app_log::warn("更新主窗口缩放状态失败：没有找到主窗口");
     }
 }
 
@@ -737,11 +772,13 @@ fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
             app_log::info("菜单触发：锁定窗口位置");
             let state = app.state::<AssistantState>();
             set_lock_value(&state, true);
+            apply_main_window_lock_state(app, true);
         }
         TRAY_UNLOCK => {
             app_log::info("菜单触发：解锁窗口位置");
             let state = app.state::<AssistantState>();
             set_lock_value(&state, false);
+            apply_main_window_lock_state(app, false);
             show_main_window(app);
         }
         TRAY_QUIT => {
@@ -828,6 +865,7 @@ pub fn run() {
             get_settings,
             save_settings,
             start_window_drag,
+            start_window_resize,
             show_tray_menu_at_title_bar,
             write_frontend_log,
             get_log_file_path

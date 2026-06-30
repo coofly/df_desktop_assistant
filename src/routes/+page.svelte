@@ -203,6 +203,25 @@
     }
   }
 
+  async function beginResize(event: PointerEvent) {
+    if (event.button !== 0) {
+      return;
+    }
+
+    if (snapshot.locked) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    try {
+      await invoke("start_window_resize");
+    } catch {
+      // Browser preview cannot call the Tauri window command.
+    }
+  }
+
   async function openTitleBarMenu(event: MouseEvent) {
     event.preventDefault();
     event.stopPropagation();
@@ -365,6 +384,15 @@
       </article>
     {/each}
   </section>
+
+  <button
+    class:locked={snapshot.locked}
+    class="resize-grip"
+    type="button"
+    title={snapshot.locked ? "窗口位置已锁定" : "调整窗口大小"}
+    aria-label={snapshot.locked ? "窗口位置已锁定" : "调整窗口大小"}
+    onpointerdown={beginResize}
+  ></button>
 </main>
 
 <style>
@@ -374,7 +402,7 @@
 
   :global(body) {
     margin: 0;
-    min-width: 860px;
+    min-width: 910px;
     overflow: hidden;
     color: #17191a;
     background: transparent;
@@ -387,6 +415,7 @@
   }
 
   .assistant-shell {
+    position: relative;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     gap: 10px;
@@ -396,6 +425,24 @@
     background: var(--panel-bg, rgb(239 240 238 / 85%));
     border: 1px solid #303336;
     box-shadow: none;
+  }
+
+  .resize-grip {
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    width: 18px;
+    height: 18px;
+    border: 0;
+    padding: 0;
+    opacity: 0;
+    background: transparent;
+    cursor: nwse-resize;
+  }
+
+  .resize-grip.locked {
+    cursor: default;
+    pointer-events: none;
   }
 
   .top-bar {
