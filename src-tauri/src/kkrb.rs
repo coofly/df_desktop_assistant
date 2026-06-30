@@ -23,6 +23,29 @@ pub struct KkrbClient {
     session: Mutex<Option<KkrbSession>>,
 }
 
+#[derive(Debug)]
+pub(crate) struct KkrbFetchResult {
+    pub(crate) recommendations: Vec<CraftRecommendation>,
+    pub(crate) session_source: KkrbSessionSource,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum KkrbSessionSource {
+    Memory,
+    LocalFile,
+    PhpSession,
+}
+
+impl KkrbSessionSource {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Memory => "内存 session",
+            Self::LocalFile => "本地 kkrb_session.json",
+            Self::PhpSession => "从 PHPSESSID 新建",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct KkrbSession {
@@ -88,35 +111,47 @@ impl KkrbClient {
         }
     }
 
-    pub fn fetch_live_recommendations(&self) -> Result<Vec<CraftRecommendation>, String> {
+    pub fn fetch_live_recommendations(&self) -> Result<KkrbFetchResult, String> {
         app_log::debug("开始获取 kkrb 实时制作推荐");
 
-        if let Some(session) = self.cached_session() {
+        if let Some((session, session_source)) = self.cached_session() {
             app_log::debug(format!(
-                "准备使用 kkrb 缓存会话请求数据，版本号：{}",
-                session.built_ver
+                "准备使用 kkrb {} 请求数据，版本号：{}",
+                session_source.label(),
+                session.built_ver,
             ));
             if let Ok(recommendations) = self.fetch_with_session(&session) {
                 app_log::debug(format!(
-                    "使用 kkrb 缓存会话获取成功，推荐数量：{}",
+                    "使用 kkrb {} 获取成功，推荐数量：{}",
+                    session_source.label(),
                     recommendations.len()
                 ));
-                return Ok(recommendations);
+                return Ok(KkrbFetchResult {
+                    recommendations,
+                    session_source,
+                });
             }
 
-            app_log::warn("kkrb 缓存会话请求失败，将重新初始化会话");
+            app_log::warn(format!(
+                "kkrb {} 请求失败，将重新初始化会话",
+                session_source.label()
+            ));
         }
 
         let session = self.initialize_session()?;
         let recommendations = self.fetch_with_session(&session)?;
         app_log::debug(format!(
-            "使用 kkrb 新会话获取成功，推荐数量：{}",
+            "使用 kkrb {} 获取成功，推荐数量：{}",
+            KkrbSessionSource::PhpSession.label(),
             recommendations.len()
         ));
-        Ok(recommendations)
+        Ok(KkrbFetchResult {
+            recommendations,
+            session_source: KkrbSessionSource::PhpSession,
+        })
     }
 
-    fn cached_session(&self) -> Option<KkrbSession> {
+    fn cached_session(&self) -> Option<(KkrbSession, KkrbSessionSource)> {
         if let Some(session) = self
             .session
             .lock()
@@ -127,7 +162,7 @@ impl KkrbClient {
                 "命中内存中的 kkrb 会话缓存，保存时间戳：{}",
                 session.saved_at_unix_seconds
             ));
-            return Some(session);
+            return Some((session, KkrbSessionSource::Memory));
         }
 
         let session = match read_session_cache(&self.session_cache_path) {
@@ -142,7 +177,7 @@ impl KkrbClient {
             session.built_ver
         ));
         *self.session.lock().expect("kkrb session lock poisoned") = Some(session.clone());
-        Some(session)
+        Some((session, KkrbSessionSource::LocalFile))
     }
 
     fn initialize_session(&self) -> Result<KkrbSession, String> {
@@ -391,6 +426,7 @@ fn category_for_station(station: &str) -> &'static str {
 
 fn accent_for_grade(grade: u8) -> &'static str {
     match grade {
+        6 => "#a84d50",
         5 => "#c48a3a",
         4 => "#8d63b3",
         3 => "#4f86c6",
@@ -479,6 +515,11 @@ mod tests {
     }
 
     #[test]
+    fn maps_grade_six_to_red_accent() {
+        assert_eq!(accent_for_grade(6), "#a84d50");
+    }
+
+    #[test]
     fn returns_api_message_when_overview_response_fails() {
         let error = normalize_swat_recommendations(r#"{"code":-101,"msg":"系统繁忙，请稍后再试"}"#)
             .expect_err("api error should be returned");
@@ -527,7 +568,10 @@ mod tests {
             .expect("live kkrb data");
         let _ = fs::remove_file(cache_path);
 
-        assert_eq!(recommendations.len(), 4);
-        assert!(recommendations.iter().all(|item| item.current_profit > 0));
+        assert_eq!(recommendations.recommendations.len(), 4);
+        assert!(recommendations
+            .recommendations
+            .iter()
+            .all(|item| item.current_profit > 0));
     }
 }

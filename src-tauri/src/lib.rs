@@ -326,10 +326,12 @@ fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
     let locked = lock_value(&state);
 
     match state.kkrb_client.fetch_live_recommendations() {
-        Ok(recommendations) => {
+        Ok(result) => {
+            let recommendations = result.recommendations;
             app_log::info(format!(
-                "制作推荐获取成功，来源：kkrb 实时数据，数量：{}",
-                recommendations.len()
+                "制作推荐获取成功，来源：kkrb 实时数据，session：{}，数量：{}",
+                result.session_source.label(),
+                recommendations.len(),
             ));
             *state
                 .cached_recommendations
