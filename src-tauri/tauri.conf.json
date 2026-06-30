@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Delta Force Craft Assistant",
+  "productName": "三角洲行动特勤处制作助手",
   "version": "0.1.0",
-  "identifier": "com.coofly.df_desktop_assistant",
+  "identifier": "com.coofly.df-desktop-assistant",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -32,7 +32,14 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": "nsis",
+    "windows": {
+      "nsis": {
+        "languages": [
+          "SimpChinese"
+        ]
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

@@ -4,7 +4,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::Mutex,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{app_log, CraftRecommendation};
@@ -15,6 +15,8 @@ const USER_AGENT: &str = concat!(
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 );
 const SESSION_CACHE_FILE: &str = "kkrb_session.json";
+const REQUEST_TIMEOUT_SECONDS: u64 = 20;
+const CONNECT_TIMEOUT_SECONDS: u64 = 8;
 
 #[derive(Debug)]
 pub struct KkrbClient {
@@ -311,6 +313,8 @@ fn build_client() -> Result<reqwest::blocking::Client, String> {
         .cookie_store(true)
         .default_headers(headers)
         .user_agent(USER_AGENT)
+        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
+        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
         .build()
         .map_err(|error| error.to_string())
 }
@@ -322,7 +326,7 @@ fn default_session_cache_path() -> PathBuf {
         .unwrap_or_else(std::env::temp_dir);
 
     base_dir
-        .join("com.coofly.df_desktop_assistant")
+        .join("com.coofly.df-desktop-assistant")
         .join(SESSION_CACHE_FILE)
 }
 

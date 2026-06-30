@@ -84,6 +84,7 @@
   let failedImages = $state<Set<string>>(new Set());
   let refreshIntervalMinutes = $state(5);
   let mainWindowOpacityPercent = $state(5);
+  let refreshInFlight = false;
   let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
   let unlistenSettings: UnlistenFn | undefined;
 
@@ -141,12 +142,20 @@
   }
 
   async function loadRecommendations() {
+    if (refreshInFlight) {
+      writeLog("上一次制作推荐刷新仍在进行，本轮自动刷新已跳过");
+      return;
+    }
+
+    refreshInFlight = true;
     loading = true;
     error = "";
+    writeLog("开始刷新制作推荐");
 
     try {
       snapshot = await invoke<AssistantSnapshot>("get_recommendations");
       refreshedAt = formatNow();
+      writeLog(`制作推荐刷新完成：${snapshot.updatedAt}`);
     } catch (cause) {
       snapshot = previewSnapshot;
       refreshedAt = formatNow();
@@ -154,6 +163,7 @@
       writeLog(`制作推荐加载失败，已使用预览数据：${error}`);
     } finally {
       loading = false;
+      refreshInFlight = false;
     }
   }
 

@@ -4,6 +4,7 @@ mod kkrb;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
+    io,
     path::{Path, PathBuf},
     process::Command,
     sync::Mutex,
@@ -21,6 +22,7 @@ const TRAY_UNLOCK: &str = "unlock_window";
 const TRAY_QUIT: &str = "quit_app";
 const STARTUP_ENTRY_NAME: &str = "Delta Force Craft Assistant";
 const STARTUP_REGISTRY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const STARTUP_REGISTRY_SUBKEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const SETTINGS_UPDATED_EVENT: &str = "settings-updated";
@@ -32,7 +34,8 @@ const DEFAULT_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
 const MAX_MAIN_WINDOW_OPACITY_PERCENT: u8 = 100;
 const APP_DATA_DIR_NAME: &str = "Delta Force Craft Assistant";
 const SETTINGS_WINDOW_WIDTH: f64 = 360.0;
-const SETTINGS_WINDOW_HEIGHT: f64 = 340.0;
+const SETTINGS_WINDOW_HEIGHT: f64 = 390.0;
+const SETTINGS_WINDOW_MAIN_GAP: i32 = 3;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -107,6 +110,13 @@ struct WindowPosition {
     y: i32,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowStateFile {
+    position: Option<WindowPosition>,
+    locked: bool,
+}
+
 struct AssistantState {
     locked: Mutex<bool>,
     settings: Mutex<AssistantSettings>,
@@ -120,18 +130,23 @@ impl AssistantState {
     fn new(app_data_dir: PathBuf) -> Self {
         let settings_path = app_data_dir.join(SETTINGS_FILE_NAME);
         let window_state_path = app_data_dir.join(WINDOW_STATE_FILE_NAME);
-        let settings = read_settings_file(&settings_path).unwrap_or_default();
+        let settings = read_settings(&settings_path).unwrap_or_else(|error| {
+            app_log::warn(format!("设置读取失败，将使用默认设置：{error}"));
+            AssistantSettings::default()
+        });
+        let window_state = read_window_state_file(&window_state_path).unwrap_or_default();
         app_log::debug(format!(
-            "助手状态初始化完成，设置文件路径：{}，窗口状态路径：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
+            "助手状态初始化完成，设置文件路径：{}，窗口状态路径：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%，锁定位置：{}",
             settings_path.display(),
             window_state_path.display(),
             settings.refresh_interval_minutes,
             enabled_text(settings.launch_on_startup),
-            settings.main_window_opacity_percent
+            settings.main_window_opacity_percent,
+            enabled_text(window_state.locked)
         ));
 
         Self {
-            locked: Mutex::new(false),
+            locked: Mutex::new(window_state.locked),
             settings: Mutex::new(settings),
             settings_path,
             window_state_path,
@@ -199,6 +214,20 @@ fn read_settings_file(path: &Path) -> Result<AssistantSettings, String> {
     Ok(settings)
 }
 
+fn read_settings(path: &Path) -> Result<AssistantSettings, String> {
+    let mut settings = read_settings_file(path)?;
+    settings.launch_on_startup = match read_launch_on_startup() {
+        Ok(launch_on_startup) => launch_on_startup,
+        Err(error) => {
+            app_log::warn(format!(
+                "读取真实开机自启动状态失败，将按未开启处理：{error}"
+            ));
+            false
+        }
+    };
+    Ok(settings)
+}
+
 fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), String> {
     app_log::debug(format!(
         "开始写入设置文件：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
@@ -218,34 +247,44 @@ fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), 
     Ok(())
 }
 
-fn read_window_position_file(path: &Path) -> Result<Option<WindowPosition>, String> {
+fn read_window_state_file(path: &Path) -> Result<WindowStateFile, String> {
     if !path.exists() {
-        app_log::debug(format!("未找到窗口位置文件：{}", path.display()));
-        return Ok(None);
+        app_log::debug(format!("未找到窗口状态文件：{}", path.display()));
+        return Ok(WindowStateFile::default());
     }
 
     let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let position: WindowPosition =
+    let window_state: WindowStateFile =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    let position_text = window_state
+        .position
+        .as_ref()
+        .map(|position| format!("x={}，y={}", position.x, position.y))
+        .unwrap_or_else(|| "无位置".to_string());
     app_log::debug(format!(
-        "窗口位置读取成功：x={}，y={}",
-        position.x, position.y
+        "窗口状态读取成功：{}，锁定位置：{}",
+        position_text,
+        enabled_text(window_state.locked)
     ));
-    Ok(Some(position))
+    Ok(window_state)
 }
 
-fn write_window_position_file(path: &Path, position: &WindowPosition) -> Result<(), String> {
+fn write_window_state_file(path: &Path, window_state: &WindowStateFile) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
 
-    let text = serde_json::to_string_pretty(position).map_err(|error| error.to_string())?;
+    let text = serde_json::to_string_pretty(window_state).map_err(|error| error.to_string())?;
     fs::write(path, text).map_err(|error| error.to_string())?;
     app_log::debug(format!(
-        "窗口位置写入成功：x={}，y={}",
-        position.x, position.y
+        "窗口状态写入成功：锁定位置：{}",
+        enabled_text(window_state.locked)
     ));
     Ok(())
+}
+
+fn quoted_startup_exe_path(exe_path: &Path) -> String {
+    format!("\"{}\"", exe_path.to_string_lossy())
 }
 
 fn startup_registry_command(enable: bool, exe_path: &Path) -> Vec<String> {
@@ -258,7 +297,7 @@ fn startup_registry_command(enable: bool, exe_path: &Path) -> Vec<String> {
             "/t".to_string(),
             "REG_SZ".to_string(),
             "/d".to_string(),
-            exe_path.to_string_lossy().to_string(),
+            quoted_startup_exe_path(exe_path),
             "/f".to_string(),
         ]
     } else {
@@ -273,15 +312,137 @@ fn startup_registry_command(enable: bool, exe_path: &Path) -> Vec<String> {
 }
 
 fn startup_registry_status_result(enable: bool, success: bool) -> Result<(), String> {
-    if success || !enable {
+    if success {
         Ok(())
+    } else if enable {
+        Err("开机自启动开启失败，请确认当前账号有权限写入用户启动项".to_string())
     } else {
-        Err("开机自启动设置失败".to_string())
+        Err("开机自启动关闭失败，请确认当前账号有权限删除用户启动项".to_string())
     }
+}
+
+fn startup_registry_value_to_enabled(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+}
+
+#[cfg(windows)]
+fn read_startup_registry_value() -> Result<Option<String>, String> {
+    use std::ptr::null_mut;
+    use windows_sys::Win32::{
+        Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA, ERROR_SUCCESS},
+        System::Registry::{
+            RegCloseKey, RegOpenKeyExW, RegQueryValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE,
+            REG_SZ,
+        },
+    };
+
+    unsafe {
+        let mut key: HKEY = null_mut();
+        let open_result = RegOpenKeyExW(
+            HKEY_CURRENT_USER,
+            wide_null(STARTUP_REGISTRY_SUBKEY).as_ptr(),
+            0,
+            KEY_QUERY_VALUE,
+            &mut key,
+        );
+
+        if open_result == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+
+        if open_result != ERROR_SUCCESS {
+            return Err(registry_error_message("读取开机自启动状态失败", open_result));
+        }
+
+        let value_name = wide_null(STARTUP_ENTRY_NAME);
+        let mut value_type = 0;
+        let mut value_size = 0;
+        let size_result = RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            null_mut(),
+            &mut value_size,
+        );
+
+        if size_result == ERROR_FILE_NOT_FOUND {
+            RegCloseKey(key);
+            return Ok(None);
+        }
+
+        if size_result != ERROR_SUCCESS && size_result != ERROR_MORE_DATA {
+            RegCloseKey(key);
+            return Err(registry_error_message("读取开机自启动状态失败", size_result));
+        }
+
+        if value_type != REG_SZ || value_size == 0 {
+            RegCloseKey(key);
+            return Ok(None);
+        }
+
+        let mut buffer = vec![0u8; value_size as usize];
+        let query_result = RegQueryValueExW(
+            key,
+            value_name.as_ptr(),
+            std::ptr::null(),
+            &mut value_type,
+            buffer.as_mut_ptr(),
+            &mut value_size,
+        );
+        RegCloseKey(key);
+
+        if query_result == ERROR_FILE_NOT_FOUND {
+            return Ok(None);
+        }
+
+        if query_result != ERROR_SUCCESS {
+            return Err(registry_error_message("读取开机自启动状态失败", query_result));
+        }
+
+        if value_type != REG_SZ {
+            return Ok(None);
+        }
+
+        let len = (value_size as usize / 2).min(buffer.len() / 2);
+        let wide: Vec<u16> = buffer
+            .chunks_exact(2)
+            .take(len)
+            .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+            .take_while(|character| *character != 0)
+            .collect();
+
+        Ok(Some(String::from_utf16_lossy(&wide)))
+    }
+}
+
+#[cfg(not(windows))]
+fn read_startup_registry_value() -> Result<Option<String>, String> {
+    Ok(None)
+}
+
+fn read_launch_on_startup() -> Result<bool, String> {
+    let value = read_startup_registry_value()?;
+    Ok(startup_registry_value_to_enabled(value.as_deref()))
+}
+
+fn registry_error_message(context: &str, code: u32) -> String {
+    format!(
+        "{context}：{}（Windows 错误码 {code}）",
+        io::Error::from_raw_os_error(code as i32)
+    )
 }
 
 fn apply_launch_on_startup(enable: bool) -> Result<(), String> {
     let exe_path = std::env::current_exe().map_err(|error| error.to_string())?;
+    if !enable && !read_launch_on_startup()? {
+        app_log::debug("开机自启动已处于关闭状态，跳过删除启动项");
+        return Ok(());
+    }
+
     let args = startup_registry_command(enable, &exe_path);
     app_log::debug(format!(
         "开始{}开机自启动，程序路径：{}",
@@ -380,6 +541,15 @@ fn set_lock_value(state: &AssistantState, locked: bool) -> bool {
     *lock
 }
 
+fn persist_window_lock_state(state: &AssistantState, locked: bool) {
+    let mut window_state = read_window_state_file(&state.window_state_path).unwrap_or_default();
+    window_state.locked = locked;
+
+    if let Err(error) = write_window_state_file(&state.window_state_path, &window_state) {
+        app_log::warn(format!("保存窗口锁定状态失败：{error}"));
+    }
+}
+
 #[tauri::command]
 fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
     app_log::debug("前端请求获取制作推荐");
@@ -444,17 +614,37 @@ fn set_lock_state(app: tauri::AppHandle, state: State<'_, AssistantState>, locke
         if locked { "锁定" } else { "解锁" }
     ));
     let locked = set_lock_value(&state, locked);
+    persist_window_lock_state(&state, locked);
     apply_main_window_lock_state(&app, locked);
     locked
 }
 
 #[tauri::command]
 fn get_settings(state: State<'_, AssistantState>) -> AssistantSettings {
-    let settings = state
+    let mut settings = state
         .settings
         .lock()
         .expect("assistant settings lock poisoned")
         .clone();
+    match read_launch_on_startup() {
+        Ok(launch_on_startup) => {
+            settings.launch_on_startup = launch_on_startup;
+            *state
+                .settings
+                .lock()
+                .expect("assistant settings lock poisoned") = settings.clone();
+        }
+        Err(error) => {
+            app_log::warn(format!(
+                "读取真实开机自启动状态失败，将按未开启处理：{error}"
+            ));
+            settings.launch_on_startup = false;
+            *state
+                .settings
+                .lock()
+                .expect("assistant settings lock poisoned") = settings.clone();
+        }
+    }
     app_log::debug(format!(
         "前端读取设置，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
         settings.refresh_interval_minutes,
@@ -485,6 +675,11 @@ fn save_settings(
     );
 
     apply_launch_on_startup(settings.launch_on_startup)?;
+    let settings = AssistantSettings::new(
+        settings.refresh_interval_minutes,
+        read_launch_on_startup()?,
+        settings.main_window_opacity_percent,
+    );
     write_settings_file(&state.settings_path, &settings)?;
     *state
         .settings
@@ -514,6 +709,28 @@ fn start_window_drag(
     app_log::debug("开始拖动主窗口");
     window.start_dragging().map_err(|error| {
         app_log::warn(format!("窗口拖动启动失败：{error}"));
+        error.to_string()
+    })
+}
+
+#[tauri::command]
+fn start_settings_window_drag(window: tauri::Window) -> Result<(), String> {
+    app_log::debug("开始拖动设置窗口");
+    window.start_dragging().map_err(|error| {
+        app_log::warn(format!("设置窗口拖动启动失败：{error}"));
+        error.to_string()
+    })
+}
+
+#[tauri::command]
+fn close_settings_window(window: tauri::Window) -> Result<(), String> {
+    if window.label() != SETTINGS_WINDOW_LABEL {
+        return Err("只能关闭设置窗口".to_string());
+    }
+
+    app_log::debug("关闭设置窗口");
+    window.close().map_err(|error| {
+        app_log::warn(format!("设置窗口关闭失败：{error}"));
         error.to_string()
     })
 }
@@ -555,6 +772,25 @@ fn get_log_file_path() -> String {
     text
 }
 
+#[tauri::command]
+fn open_log_folder() -> Result<(), String> {
+    let path = app_log::log_path()
+        .unwrap_or_else(|| default_app_data_dir().join("logs").join("assistant.log"));
+    let Some(folder) = path.parent() else {
+        return Err("无法获取日志文件夹".to_string());
+    };
+
+    app_log::debug(format!("打开日志文件夹：{}", folder.display()));
+    Command::new("explorer.exe")
+        .arg(folder)
+        .spawn()
+        .map_err(|error| {
+            app_log::warn(format!("打开日志文件夹失败：{error}"));
+            error.to_string()
+        })?;
+    Ok(())
+}
+
 fn clean_log_part(text: &str) -> String {
     let mut cleaned = text
         .chars()
@@ -571,13 +807,15 @@ fn clean_log_part(text: &str) -> String {
 
 fn restore_main_window_position(app: &tauri::AppHandle) {
     let state = app.state::<AssistantState>();
-    let position = match read_window_position_file(&state.window_state_path) {
-        Ok(Some(position)) => position,
-        Ok(None) => return,
+    let window_state = match read_window_state_file(&state.window_state_path) {
+        Ok(window_state) => window_state,
         Err(error) => {
-            app_log::warn(format!("读取窗口位置失败：{error}"));
+            app_log::warn(format!("读取窗口状态失败：{error}"));
             return;
         }
+    };
+    let Some(position) = window_state.position else {
+        return;
     };
 
     if position.x <= -30_000 || position.y <= -30_000 {
@@ -621,8 +859,13 @@ fn persist_main_window_position(
         return;
     }
 
-    if let Err(error) = write_window_position_file(&state.window_state_path, &position) {
-        app_log::warn(format!("保存主窗口位置失败：{error}"));
+    let window_state = WindowStateFile {
+        position: Some(position),
+        locked: lock_value(&state),
+    };
+
+    if let Err(error) = write_window_state_file(&state.window_state_path, &window_state) {
+        app_log::warn(format!("保存主窗口状态失败：{error}"));
     }
 }
 
@@ -904,11 +1147,12 @@ fn anchored_popup_position(
 ) -> tauri::PhysicalPosition<i32> {
     let work_top = work_area_position.y;
     let popup_height = popup_size.height as i32;
+    let main_height = main_size.height as i32;
 
-    let y = if main_position.y - popup_height >= work_top {
-        main_position.y - popup_height
+    let y = if main_position.y - popup_height - SETTINGS_WINDOW_MAIN_GAP >= work_top {
+        main_position.y - popup_height - SETTINGS_WINDOW_MAIN_GAP
     } else {
-        main_position.y + main_size.height as i32
+        main_position.y + main_height + SETTINGS_WINDOW_MAIN_GAP
     };
 
     tauri::PhysicalPosition::new(main_position.x, y)
@@ -960,6 +1204,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
         app_log::info("显示设置窗口");
         place_settings_window(app, &window);
+        let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
         return;
@@ -974,9 +1219,12 @@ fn open_settings_window(app: &tauri::AppHandle) {
     .title("设置")
     .inner_size(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT)
     .min_inner_size(320.0, 320.0)
+    .decorations(false)
     .resizable(false)
     .skip_taskbar(true)
     .always_on_top(true)
+    .transparent(true)
+    .shadow(false)
     .build()
     .and_then(|window| {
         place_settings_window(app, &window);
@@ -1009,13 +1257,15 @@ fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
         TRAY_LOCK => {
             app_log::info("菜单触发：锁定窗口位置");
             let state = app.state::<AssistantState>();
-            set_lock_value(&state, true);
+            let locked = set_lock_value(&state, true);
+            persist_window_lock_state(&state, locked);
             apply_main_window_lock_state(app, true);
         }
         TRAY_UNLOCK => {
             app_log::info("菜单触发：解锁窗口位置");
             let state = app.state::<AssistantState>();
-            set_lock_value(&state, false);
+            let locked = set_lock_value(&state, false);
+            persist_window_lock_state(&state, locked);
             apply_main_window_lock_state(app, false);
         }
         TRAY_QUIT => {
@@ -1056,6 +1306,8 @@ pub fn run() {
         .setup(|app| {
             app_log::debug("Tauri setup 开始执行");
             restore_main_window_position(app.handle());
+            let locked = lock_value(&app.state::<AssistantState>());
+            apply_main_window_lock_state(app.handle(), locked);
             apply_main_window_desktop_layer_by_app(app.handle());
             app_log::debug("Tauri setup 执行完成");
             Ok(())
@@ -1074,10 +1326,13 @@ pub fn run() {
             get_settings,
             save_settings,
             start_window_drag,
+            start_settings_window_drag,
+            close_settings_window,
             start_window_resize,
             show_title_bar_menu,
             write_frontend_log,
-            get_log_file_path
+            get_log_file_path,
+            open_log_folder
         ])
         .run(tauri::generate_context!())
         .expect("Tauri 应用运行失败");
@@ -1204,7 +1459,7 @@ mod tests {
     }
 
     #[test]
-    fn window_position_file_round_trips() {
+    fn window_state_file_round_trips() {
         let path = std::env::temp_dir().join(format!(
             "df-window-state-{}.json",
             std::time::SystemTime::now()
@@ -1212,13 +1467,51 @@ mod tests {
                 .expect("system time before unix epoch")
                 .as_nanos()
         ));
-        let position = WindowPosition { x: 320, y: 180 };
+        let window_state = WindowStateFile {
+            position: Some(WindowPosition { x: 320, y: 180 }),
+            locked: true,
+        };
 
-        write_window_position_file(&path, &position).expect("window position file writes");
-        let loaded = read_window_position_file(&path).expect("window position file reads");
+        write_window_state_file(&path, &window_state).expect("window state file writes");
+        let loaded = read_window_state_file(&path).expect("window state file reads");
         fs::remove_file(path).expect("test window position file can be removed");
 
-        assert_eq!(loaded, Some(position));
+        assert_eq!(loaded, window_state);
+    }
+
+    #[test]
+    fn lock_state_persistence_preserves_position() {
+        let path = std::env::temp_dir().join(format!(
+            "df-window-lock-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        let state = AssistantState {
+            locked: Mutex::new(false),
+            settings: Mutex::new(AssistantSettings::default()),
+            settings_path: path.with_file_name("unused-settings.json"),
+            window_state_path: path.clone(),
+            cached_recommendations: Mutex::new(None),
+            kkrb_client: kkrb::KkrbClient::default(),
+        };
+        let position = WindowPosition { x: 320, y: 180 };
+        write_window_state_file(
+            &path,
+            &WindowStateFile {
+                position: Some(position.clone()),
+                locked: false,
+            },
+        )
+        .expect("initial window state writes");
+
+        persist_window_lock_state(&state, true);
+        let loaded = read_window_state_file(&path).expect("window state reads");
+        fs::remove_file(path).expect("test window state file can be removed");
+
+        assert_eq!(loaded.position, Some(position));
+        assert!(loaded.locked);
     }
 
     #[test]
@@ -1230,7 +1523,7 @@ mod tests {
             tauri::PhysicalPosition::new(0, 0),
         );
 
-        assert_eq!(position, tauri::PhysicalPosition::new(200, 160));
+        assert_eq!(position, tauri::PhysicalPosition::new(200, 157));
     }
 
     #[test]
@@ -1242,7 +1535,7 @@ mod tests {
             tauri::PhysicalPosition::new(0, 0),
         );
 
-        assert_eq!(position, tauri::PhysicalPosition::new(200, 380));
+        assert_eq!(position, tauri::PhysicalPosition::new(200, 383));
     }
 
     #[test]
@@ -1254,7 +1547,7 @@ mod tests {
             tauri::PhysicalPosition::new(0, 0),
         );
 
-        assert_eq!(position, tauri::PhysicalPosition::new(1780, 160));
+        assert_eq!(position, tauri::PhysicalPosition::new(1780, 157));
     }
 
     #[test]
@@ -1274,7 +1567,7 @@ mod tests {
                 "/t",
                 "REG_SZ",
                 "/d",
-                r"C:\Program Files\Delta Force\assistant.exe",
+                r#""C:\Program Files\Delta Force\assistant.exe""#,
                 "/f"
             ]
         );
@@ -1291,8 +1584,18 @@ mod tests {
     }
 
     #[test]
-    fn startup_disable_treats_missing_entry_as_ok() {
-        assert!(startup_registry_status_result(false, false).is_ok());
+    fn startup_registry_status_treats_delete_failure_as_error() {
+        assert!(startup_registry_status_result(false, true).is_ok());
+        assert!(startup_registry_status_result(false, false).is_err());
         assert!(startup_registry_status_result(true, false).is_err());
+    }
+
+    #[test]
+    fn startup_registry_value_controls_startup_status() {
+        assert!(startup_registry_value_to_enabled(Some(
+            r#""C:\Program Files\Delta Force\assistant.exe""#
+        )));
+        assert!(!startup_registry_value_to_enabled(Some("")));
+        assert!(!startup_registry_value_to_enabled(None));
     }
 }
