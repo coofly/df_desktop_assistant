@@ -453,7 +453,7 @@
     padding: 4px 8px;
     cursor: grab;
     user-select: none;
-    background: rgb(255 255 255 / 42%);
+    background: rgb(0 0 0 / 30%);
   }
 
   .top-bar.locked {
@@ -477,6 +477,7 @@
 
   h1 {
     margin: 0;
+    color: #ffffff;
     font-size: 15px;
     font-weight: 700;
     line-height: 1.2;
@@ -486,7 +487,7 @@
   .updated-time {
     position: relative;
     top: 1px;
-    color: #565b60;
+    color: #cfd3d7;
     font-size: 12px;
     line-height: 1.2;
     white-space: nowrap;
@@ -507,7 +508,7 @@
     border: 0;
     border-radius: 0;
     padding: 0;
-    color: #191c1f;
+    color: #d7dbe0;
     background: transparent;
     box-shadow: none;
     cursor: pointer;
@@ -525,13 +526,8 @@
   }
 
   .icon-button:hover {
-    color: #000000;
-    background: rgb(23 25 26 / 8%);
-  }
-
-  .icon-button.locked {
     color: #ffffff;
-    background: #25282b;
+    background: rgb(255 255 255 / 12%);
   }
 
   .icon-button:disabled {
@@ -562,7 +558,7 @@
     overflow: hidden;
     border: 1px solid #50545a;
     border-radius: 0;
-    background: rgb(255 255 255 / 50%);
+    background: rgb(0 0 0 / 30%);
     box-shadow: none;
   }
 
@@ -581,7 +577,7 @@
   .station {
     font-size: 13px;
     font-weight: 700;
-    color: #222528;
+    color: #ffffff;
   }
 
   dl {
@@ -602,11 +598,11 @@
   }
 
   dt {
-    color: #3b4045;
+    color: #cfd3d7;
   }
 
   dd {
-    color: #151719;
+    color: #ffffff;
     font-weight: 800;
   }
 
