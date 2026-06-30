@@ -24,6 +24,7 @@ const TRAY_QUIT: &str = "quit_app";
 const STARTUP_ENTRY_NAME: &str = "Delta Force Craft Assistant";
 const STARTUP_REGISTRY_PATH: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const SETTINGS_FILE_NAME: &str = "settings.json";
+const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const SETTINGS_UPDATED_EVENT: &str = "settings-updated";
 const MIN_REFRESH_INTERVAL_MINUTES: u16 = 1;
 const DEFAULT_REFRESH_INTERVAL_MINUTES: u16 = 5;
@@ -99,20 +100,31 @@ struct StoredAssistantSettings {
     main_window_opacity_percent: Option<u8>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct WindowPosition {
+    x: i32,
+    y: i32,
+}
+
 struct AssistantState {
     locked: Mutex<bool>,
     settings: Mutex<AssistantSettings>,
     settings_path: PathBuf,
+    window_state_path: PathBuf,
     cached_recommendations: Mutex<Option<Vec<CraftRecommendation>>>,
     kkrb_client: kkrb::KkrbClient,
 }
 
 impl AssistantState {
-    fn new(settings_path: PathBuf) -> Self {
+    fn new(app_data_dir: PathBuf) -> Self {
+        let settings_path = app_data_dir.join(SETTINGS_FILE_NAME);
+        let window_state_path = app_data_dir.join(WINDOW_STATE_FILE_NAME);
         let settings = read_settings_file(&settings_path).unwrap_or_default();
         app_log::debug(format!(
-            "助手状态初始化完成，设置文件路径：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
+            "助手状态初始化完成，设置文件路径：{}，窗口状态路径：{}，刷新间隔：{} 分钟，开机自启动：{}，主面板透明度：{}%",
             settings_path.display(),
+            window_state_path.display(),
             settings.refresh_interval_minutes,
             enabled_text(settings.launch_on_startup),
             settings.main_window_opacity_percent
@@ -122,6 +134,7 @@ impl AssistantState {
             locked: Mutex::new(false),
             settings: Mutex::new(settings),
             settings_path,
+            window_state_path,
             cached_recommendations: Mutex::new(None),
             kkrb_client: kkrb::KkrbClient::default(),
         }
@@ -130,12 +143,8 @@ impl AssistantState {
 
 impl Default for AssistantState {
     fn default() -> Self {
-        Self::new(default_settings_path())
+        Self::new(default_app_data_dir())
     }
-}
-
-fn default_settings_path() -> PathBuf {
-    default_app_data_dir().join(SETTINGS_FILE_NAME)
 }
 
 fn default_app_data_dir() -> PathBuf {
@@ -206,6 +215,35 @@ fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), 
     let text = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     fs::write(path, text).map_err(|error| error.to_string())?;
     app_log::debug("设置文件写入成功");
+    Ok(())
+}
+
+fn read_window_position_file(path: &Path) -> Result<Option<WindowPosition>, String> {
+    if !path.exists() {
+        app_log::debug(format!("未找到窗口位置文件：{}", path.display()));
+        return Ok(None);
+    }
+
+    let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let position: WindowPosition = serde_json::from_str(&text).map_err(|error| error.to_string())?;
+    app_log::debug(format!(
+        "窗口位置读取成功：x={}，y={}",
+        position.x, position.y
+    ));
+    Ok(Some(position))
+}
+
+fn write_window_position_file(path: &Path, position: &WindowPosition) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+
+    let text = serde_json::to_string_pretty(position).map_err(|error| error.to_string())?;
+    fs::write(path, text).map_err(|error| error.to_string())?;
+    app_log::debug(format!(
+        "窗口位置写入成功：x={}，y={}",
+        position.x, position.y
+    ));
     Ok(())
 }
 
@@ -526,6 +564,46 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn restore_main_window_position(app: &tauri::AppHandle) {
+    let state = app.state::<AssistantState>();
+    let position = match read_window_position_file(&state.window_state_path) {
+        Ok(Some(position)) => position,
+        Ok(None) => return,
+        Err(error) => {
+            app_log::warn(format!("读取窗口位置失败：{error}"));
+            return;
+        }
+    };
+
+    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        let result = window.set_position(tauri::PhysicalPosition::new(position.x, position.y));
+
+        match result {
+            Ok(_) => app_log::info(format!(
+                "已恢复主窗口位置：x={}，y={}",
+                position.x, position.y
+            )),
+            Err(error) => app_log::warn(format!("恢复主窗口位置失败：{error}")),
+        }
+    } else {
+        app_log::warn("恢复主窗口位置失败：没有找到主窗口");
+    }
+}
+
+fn persist_main_window_position(
+    state: State<'_, AssistantState>,
+    position: &tauri::PhysicalPosition<i32>,
+) {
+    let position = WindowPosition {
+        x: position.x,
+        y: position.y,
+    };
+
+    if let Err(error) = write_window_position_file(&state.window_state_path, &position) {
+        app_log::warn(format!("保存主窗口位置失败：{error}"));
+    }
+}
+
 fn toggle_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         match window.is_visible() {
@@ -656,21 +734,29 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(AssistantState::new(app_data_dir.join(SETTINGS_FILE_NAME)))
+        .manage(AssistantState::new(app_data_dir.clone()))
         .setup(|app| {
             app_log::debug("Tauri setup 开始执行");
             create_tray(app)?;
+            restore_main_window_position(app.handle());
             app_log::debug("Tauri setup 执行完成");
             Ok(())
         })
         .on_window_event(|window, event| {
-            if let WindowEvent::CloseRequested { api, .. } = event {
-                app_log::info(format!(
-                    "窗口 {} 收到关闭请求，改为隐藏到托盘",
-                    window.label()
-                ));
-                api.prevent_close();
-                let _ = window.hide();
+            match event {
+                WindowEvent::Moved(position) if window.label() == MAIN_WINDOW_LABEL => {
+                    let state = window.state::<AssistantState>();
+                    persist_main_window_position(state, position);
+                }
+                WindowEvent::CloseRequested { api, .. } => {
+                    app_log::info(format!(
+                        "窗口 {} 收到关闭请求，改为隐藏到托盘",
+                        window.label()
+                    ));
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+                _ => {}
             }
         })
         .invoke_handler(tauri::generate_handler![
@@ -806,6 +892,24 @@ mod tests {
         fs::remove_file(path).expect("test settings file can be removed");
 
         assert_eq!(loaded, settings);
+    }
+
+    #[test]
+    fn window_position_file_round_trips() {
+        let path = std::env::temp_dir().join(format!(
+            "df-window-state-{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time before unix epoch")
+                .as_nanos()
+        ));
+        let position = WindowPosition { x: 320, y: 180 };
+
+        write_window_position_file(&path, &position).expect("window position file writes");
+        let loaded = read_window_position_file(&path).expect("window position file reads");
+        fs::remove_file(path).expect("test window position file can be removed");
+
+        assert_eq!(loaded, Some(position));
     }
 
     #[test]

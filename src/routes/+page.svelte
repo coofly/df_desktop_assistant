@@ -327,7 +327,6 @@
       <article class="card">
         <div class="meta">
           <span class="station">{recommendation.station}</span>
-          <span class="category">{recommendation.category}</span>
         </div>
 
         <dl>
@@ -390,7 +389,7 @@
   .assistant-shell {
     width: 100vw;
     height: 100vh;
-    padding: 10px 12px 12px;
+    padding: 10px 12px;
     background: var(--panel-bg, rgb(239 240 238 / 85%));
     border: 1px solid #303336;
     box-shadow: none;
@@ -525,7 +524,6 @@
   .meta {
     display: flex;
     flex-direction: column;
-    gap: 5px;
     padding-top: 16px;
   }
 
@@ -535,18 +533,8 @@
     color: #222528;
   }
 
-  .category {
-    width: fit-content;
-    border: 1px solid #6b7075;
-    border-radius: 0;
-    padding: 2px 8px;
-    color: #33383d;
-    background: rgb(255 255 255 / 42%);
-    font-size: 11px;
-  }
-
   dl {
-    margin: 10px 0 0;
+    margin: 12px 0 0;
   }
 
   dl div {
