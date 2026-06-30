@@ -133,10 +133,8 @@
       window.clearInterval(refreshTimer);
     }
 
-    writeLog(`已设置自动刷新定时器，每 ${refreshIntervalMinutes} 分钟刷新一次`);
     refreshTimer = window.setInterval(
       () => {
-        writeLog("自动刷新定时器触发，准备重新获取推荐");
         loadRecommendations();
       },
       refreshIntervalMinutes * 60 * 1000
@@ -146,12 +144,10 @@
   async function loadRecommendations() {
     loading = true;
     error = "";
-    writeLog("开始获取制作推荐");
 
     try {
       snapshot = await invoke<AssistantSnapshot>("get_recommendations");
       refreshedAt = formatNow();
-      writeLog(`制作推荐加载成功，推荐数量：${snapshot.recommendations.length}，数据状态：${snapshot.updatedAt}`);
     } catch (cause) {
       snapshot = previewSnapshot;
       refreshedAt = formatNow();
@@ -166,7 +162,6 @@
     try {
       const settings = await invoke<AssistantSettings>("get_settings");
       refreshIntervalMinutes = clampInterval(settings.refreshIntervalMinutes);
-      writeLog(`设置加载成功，刷新间隔：${refreshIntervalMinutes} 分钟`);
     } catch {
       refreshIntervalMinutes = 5;
       writeLog("设置加载失败，使用默认刷新间隔：5 分钟");
@@ -177,14 +172,12 @@
 
   function applySettings(settings: AssistantSettings) {
     refreshIntervalMinutes = clampInterval(settings.refreshIntervalMinutes);
-    writeLog(`收到设置更新事件，刷新间隔调整为 ${refreshIntervalMinutes} 分钟`);
     scheduleRefresh();
   }
 
   async function setLocked(locked: boolean) {
     try {
       snapshot = await invoke<AssistantSnapshot>("set_lock_state", { locked });
-      writeLog(`窗口位置已${locked ? "锁定" : "解锁"}`);
     } catch {
       snapshot = { ...snapshot, locked };
       writeLog(`锁定状态更新失败，预览状态改为：${locked ? "锁定" : "解锁"}`);
@@ -198,7 +191,6 @@
 
     try {
       await invoke("start_window_drag");
-      writeLog("用户开始拖动窗口");
     } catch {
       // Browser preview cannot call the Tauri window command.
     }

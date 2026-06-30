@@ -86,7 +86,7 @@ struct AssistantState {
 impl AssistantState {
     fn new(settings_path: PathBuf) -> Self {
         let settings = read_settings_file(&settings_path).unwrap_or_default();
-        app_log::info(format!(
+        app_log::debug(format!(
             "助手状态初始化完成，设置文件路径：{}，刷新间隔：{} 分钟，开机自启动：{}",
             settings_path.display(),
             settings.refresh_interval_minutes,
@@ -132,18 +132,18 @@ fn enabled_text(enabled: bool) -> &'static str {
 
 fn read_settings_file(path: &Path) -> Result<AssistantSettings, String> {
     if !path.exists() {
-        app_log::info(format!(
+        app_log::debug(format!(
             "未找到设置文件，将使用默认设置：{}",
             path.display()
         ));
         return Ok(AssistantSettings::default());
     }
 
-    app_log::info(format!("开始读取设置文件：{}", path.display()));
+    app_log::debug(format!("开始读取设置文件：{}", path.display()));
     let text = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let settings: AssistantSettings =
         serde_json::from_str(&text).map_err(|error| error.to_string())?;
-    app_log::info(format!(
+    app_log::debug(format!(
         "设置文件读取成功，刷新间隔：{} 分钟，开机自启动：{}",
         settings.refresh_interval_minutes,
         enabled_text(settings.launch_on_startup)
@@ -156,7 +156,7 @@ fn read_settings_file(path: &Path) -> Result<AssistantSettings, String> {
 }
 
 fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), String> {
-    app_log::info(format!(
+    app_log::debug(format!(
         "开始写入设置文件：{}，刷新间隔：{} 分钟，开机自启动：{}",
         path.display(),
         settings.refresh_interval_minutes,
@@ -169,7 +169,7 @@ fn write_settings_file(path: &Path, settings: &AssistantSettings) -> Result<(), 
 
     let text = serde_json::to_string_pretty(settings).map_err(|error| error.to_string())?;
     fs::write(path, text).map_err(|error| error.to_string())?;
-    app_log::info("设置文件写入成功");
+    app_log::debug("设置文件写入成功");
     Ok(())
 }
 
@@ -209,7 +209,7 @@ fn startup_registry_status_result(enable: bool, success: bool) -> Result<(), Str
 fn apply_launch_on_startup(enable: bool) -> Result<(), String> {
     let exe_path = std::env::current_exe().map_err(|error| error.to_string())?;
     let args = startup_registry_command(enable, &exe_path);
-    app_log::info(format!(
+    app_log::debug(format!(
         "开始{}开机自启动，程序路径：{}",
         if enable { "开启" } else { "关闭" },
         exe_path.display()
@@ -220,7 +220,7 @@ fn apply_launch_on_startup(enable: bool) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
 
     if status.success() {
-        app_log::info(format!(
+        app_log::debug(format!(
             "开机自启动{}操作完成",
             if enable { "开启" } else { "关闭" }
         ));
@@ -237,7 +237,7 @@ fn apply_launch_on_startup(enable: bool) -> Result<(), String> {
 
 #[cfg(not(windows))]
 fn apply_launch_on_startup(_enable: bool) -> Result<(), String> {
-    app_log::info("当前平台不是 Windows，跳过开机自启动设置");
+    app_log::debug("当前平台不是 Windows，跳过开机自启动设置");
     Ok(())
 }
 
@@ -322,7 +322,7 @@ fn set_lock_value(state: &AssistantState, locked: bool) -> bool {
 
 #[tauri::command]
 fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
-    app_log::info("前端请求获取制作推荐");
+    app_log::debug("前端请求获取制作推荐");
     let locked = lock_value(&state);
 
     match state.kkrb_client.fetch_live_recommendations() {
@@ -371,13 +371,16 @@ fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
 #[tauri::command]
 fn get_lock_state(state: State<'_, AssistantState>) -> bool {
     let locked = lock_value(&state);
-    app_log::info(format!("前端读取锁定状态：{}", enabled_text(locked)));
+    app_log::debug(format!("前端读取锁定状态：{}", enabled_text(locked)));
     locked
 }
 
 #[tauri::command]
 fn set_lock_state(state: State<'_, AssistantState>, locked: bool) -> AssistantSnapshot {
-    app_log::info(format!("前端设置窗口锁定状态：{}", enabled_text(locked)));
+    app_log::info(format!(
+        "窗口位置已{}",
+        if locked { "锁定" } else { "解锁" }
+    ));
     assistant_snapshot(set_lock_value(&state, locked))
 }
 
@@ -388,7 +391,7 @@ fn get_settings(state: State<'_, AssistantState>) -> AssistantSettings {
         .lock()
         .expect("assistant settings lock poisoned")
         .clone();
-    app_log::info(format!(
+    app_log::debug(format!(
         "前端读取设置，刷新间隔：{} 分钟，开机自启动：{}",
         settings.refresh_interval_minutes,
         enabled_text(settings.launch_on_startup)
@@ -403,7 +406,7 @@ fn save_settings(
     refresh_interval_minutes: u16,
     launch_on_startup: bool,
 ) -> Result<AssistantSettings, String> {
-    app_log::info(format!(
+    app_log::debug(format!(
         "前端请求保存设置，刷新间隔：{} 分钟，开机自启动：{}",
         refresh_interval_minutes,
         enabled_text(launch_on_startup)
@@ -417,7 +420,11 @@ fn save_settings(
         .lock()
         .expect("assistant settings lock poisoned") = settings.clone();
     let _ = app.emit_to(MAIN_WINDOW_LABEL, SETTINGS_UPDATED_EVENT, settings.clone());
-    app_log::info("设置保存成功，并已通知主窗口刷新设置");
+    app_log::info(format!(
+        "设置保存成功，刷新间隔：{} 分钟，开机自启动：{}",
+        settings.refresh_interval_minutes,
+        enabled_text(settings.launch_on_startup)
+    ));
 
     Ok(settings)
 }
@@ -428,11 +435,11 @@ fn start_window_drag(
     state: State<'_, AssistantState>,
 ) -> Result<(), String> {
     if lock_value(&state) {
-        app_log::info("窗口已锁定，本次拖动请求被忽略");
+        app_log::debug("窗口已锁定，本次拖动请求被忽略");
         return Ok(());
     }
 
-    app_log::info("开始拖动主窗口");
+    app_log::debug("开始拖动主窗口");
     window.start_dragging().map_err(|error| {
         app_log::warn(format!("窗口拖动启动失败：{error}"));
         error.to_string()
@@ -453,7 +460,7 @@ fn get_log_file_path() -> String {
     let path = app_log::log_path()
         .unwrap_or_else(|| default_app_data_dir().join("logs").join("assistant.log"));
     let text = path.to_string_lossy().to_string();
-    app_log::info(format!("前端读取日志文件路径：{text}"));
+    app_log::debug(format!("前端读取日志文件路径：{text}"));
     text
 }
 
@@ -473,7 +480,7 @@ fn clean_log_part(text: &str) -> String {
 
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        app_log::info("显示主窗口并请求焦点");
+        app_log::debug("显示主窗口并请求焦点");
         let _ = window.show();
         let _ = window.set_focus();
     } else {
@@ -501,13 +508,13 @@ fn toggle_main_window(app: &tauri::AppHandle) {
 
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
-        app_log::info("设置窗口已存在，显示并请求焦点");
+        app_log::info("显示设置窗口");
         let _ = window.show();
         let _ = window.set_focus();
         return;
     }
 
-    app_log::info("开始创建设置窗口");
+    app_log::debug("开始创建设置窗口");
     let result = WebviewWindowBuilder::new(
         app,
         SETTINGS_WINDOW_LABEL,
@@ -531,7 +538,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
 }
 
 fn create_tray(app: &tauri::App) -> tauri::Result<()> {
-    app_log::info("开始创建系统托盘图标和菜单");
+    app_log::debug("开始创建系统托盘图标和菜单");
     let show_hide = MenuItemBuilder::with_id(TRAY_TOGGLE, "显示/隐藏窗口").build(app)?;
     let settings = MenuItemBuilder::with_id(TRAY_SETTINGS, "设置").build(app)?;
     let lock = MenuItemBuilder::with_id(TRAY_LOCK, "锁定位置").build(app)?;
@@ -583,18 +590,15 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let app_data_dir = default_app_data_dir();
     let log_path = app_log::init(app_data_dir.clone());
-    app_log::info(format!(
-        "应用启动流程开始，日志文件：{}",
-        log_path.display()
-    ));
+    app_log::info(format!("应用启动，日志文件：{}", log_path.display()));
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AssistantState::new(app_data_dir.join(SETTINGS_FILE_NAME)))
         .setup(|app| {
-            app_log::info("Tauri setup 开始执行");
+            app_log::debug("Tauri setup 开始执行");
             create_tray(app)?;
-            app_log::info("Tauri setup 执行完成");
+            app_log::debug("Tauri setup 执行完成");
             Ok(())
         })
         .on_window_event(|window, event| {

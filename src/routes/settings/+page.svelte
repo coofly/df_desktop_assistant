@@ -34,11 +34,9 @@
   }
 
   async function loadSettings() {
-    writeLog("开始读取设置");
     try {
       settings = await invoke<AssistantSettings>("get_settings");
       status = "已载入";
-      writeLog(`设置读取成功，刷新间隔：${settings.refreshIntervalMinutes} 分钟，开机自启动：${settings.launchOnStartup ? "开启" : "关闭"}`);
     } catch {
       settings = defaultSettings;
       status = "预览默认值";
@@ -49,7 +47,6 @@
   async function saveSettings() {
     saving = true;
     error = "";
-    writeLog("开始保存设置");
     settings = {
       ...settings,
       refreshIntervalMinutes: clampInterval(settings.refreshIntervalMinutes)
@@ -61,7 +58,6 @@
         launchOnStartup: settings.launchOnStartup
       });
       status = "已保存";
-      writeLog(`设置保存成功，刷新间隔：${settings.refreshIntervalMinutes} 分钟，开机自启动：${settings.launchOnStartup ? "开启" : "关闭"}`);
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause || "保存设置失败");
       writeLog(`设置保存失败：${error}`);
@@ -73,7 +69,6 @@
   async function loadLogFilePath() {
     try {
       logFilePath = await invoke<string>("get_log_file_path");
-      writeLog(`日志文件路径读取成功：${logFilePath}`);
     } catch {
       logFilePath = "";
     }

@@ -76,7 +76,7 @@ impl Default for KkrbClient {
 
 impl KkrbClient {
     fn new(session_cache_path: PathBuf) -> Self {
-        app_log::info(format!(
+        app_log::debug(format!(
             "初始化 kkrb 客户端，会话缓存路径：{}",
             session_cache_path.display()
         ));
@@ -89,10 +89,10 @@ impl KkrbClient {
     }
 
     pub fn fetch_live_recommendations(&self) -> Result<Vec<CraftRecommendation>, String> {
-        app_log::info("开始获取 kkrb 实时制作推荐");
+        app_log::debug("开始获取 kkrb 实时制作推荐");
 
         if let Some(session) = self.cached_session() {
-            app_log::info(format!(
+            app_log::debug(format!(
                 "准备使用 kkrb 缓存会话请求数据，版本号：{}",
                 session.built_ver
             ));
@@ -133,11 +133,11 @@ impl KkrbClient {
         let session = match read_session_cache(&self.session_cache_path) {
             Ok(session) => session,
             Err(error) => {
-                app_log::info(format!("没有可用的 kkrb 磁盘会话缓存：{error}"));
+                app_log::debug(format!("没有可用的 kkrb 磁盘会话缓存：{error}"));
                 return None;
             }
         };
-        app_log::info(format!(
+        app_log::debug(format!(
             "读取 kkrb 磁盘会话缓存成功，版本号：{}",
             session.built_ver
         ));
@@ -146,7 +146,7 @@ impl KkrbClient {
     }
 
     fn initialize_session(&self) -> Result<KkrbSession, String> {
-        app_log::info("开始初始化 kkrb 会话：请求首页");
+        app_log::debug("开始初始化 kkrb 会话：请求首页");
         let home_response = self
             .client
             .get(format!("{KKRBR_BASE_URL}/?viewpage=view%2Foverview"))
@@ -155,13 +155,13 @@ impl KkrbClient {
 
         let php_session_id = php_session_id_from_headers(home_response.headers())
             .ok_or_else(|| "kkrb homepage response missing PHPSESSID".to_string())?;
-        app_log::info("kkrb 首页返回 PHPSESSID，会话 Cookie 已获取");
+        app_log::debug("kkrb 首页返回 PHPSESSID，会话 Cookie 已获取");
 
         home_response
             .error_for_status()
             .map_err(|error| error.to_string())?;
 
-        app_log::info("开始请求 kkrb getMenu 以获取数据版本号");
+        app_log::debug("开始请求 kkrb getMenu 以获取数据版本号");
         let menu: MenuResponse = self
             .client
             .post(format!("{KKRBR_BASE_URL}/getMenu"))
@@ -188,7 +188,7 @@ impl KkrbClient {
             .built_ver
             .filter(|version| !version.is_empty())
             .ok_or_else(|| "kkrb getMenu response missing built_ver".to_string())?;
-        app_log::info(format!("kkrb getMenu 成功，数据版本号：{built_ver}"));
+        app_log::debug(format!("kkrb getMenu 成功，数据版本号：{built_ver}"));
 
         let session = KkrbSession {
             php_session_id,
@@ -198,7 +198,7 @@ impl KkrbClient {
 
         *self.session.lock().expect("kkrb session lock poisoned") = Some(session.clone());
         match write_session_cache(&self.session_cache_path, &session) {
-            Ok(()) => app_log::info("kkrb 会话缓存写入成功"),
+            Ok(()) => app_log::debug("kkrb 会话缓存写入成功"),
             Err(error) => app_log::warn(format!("kkrb 会话缓存写入失败：{error}")),
         }
 
@@ -209,7 +209,7 @@ impl KkrbClient {
         &self,
         session: &KkrbSession,
     ) -> Result<Vec<CraftRecommendation>, String> {
-        app_log::info(format!(
+        app_log::debug(format!(
             "开始校验 kkrb UA 状态，版本号：{}",
             session.built_ver
         ));
@@ -235,7 +235,7 @@ impl KkrbClient {
             return Err(message);
         }
 
-        app_log::info("kkrb UA 状态校验通过，开始请求概览数据");
+        app_log::debug("kkrb UA 状态校验通过，开始请求概览数据");
         let overview_text = self
             .client
             .post(format!("{KKRBR_BASE_URL}/getOVData"))
@@ -251,7 +251,7 @@ impl KkrbClient {
             .text()
             .map_err(|error| error.to_string())?;
 
-        app_log::info(format!(
+        app_log::debug(format!(
             "kkrb 概览数据请求成功，响应长度：{} 字节",
             overview_text.len()
         ));
