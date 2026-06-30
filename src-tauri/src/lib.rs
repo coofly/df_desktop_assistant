@@ -728,9 +728,9 @@ fn close_settings_window(window: tauri::Window) -> Result<(), String> {
         return Err("只能关闭设置窗口".to_string());
     }
 
-    app_log::debug("关闭设置窗口");
-    window.close().map_err(|error| {
-        app_log::warn(format!("设置窗口关闭失败：{error}"));
+    app_log::debug("销毁设置窗口");
+    window.destroy().map_err(|error| {
+        app_log::warn(format!("设置窗口销毁失败：{error}"));
         error.to_string()
     })
 }
