@@ -74,6 +74,7 @@
         launchOnStartup: settings.launchOnStartup,
         mainWindowOpacityPercent: settings.mainWindowOpacityPercent
       });
+      await closeSettings();
     } catch (cause) {
       error = cause instanceof Error ? cause.message : String(cause || "保存设置失败");
       writeLog(`设置保存失败：${error}`);

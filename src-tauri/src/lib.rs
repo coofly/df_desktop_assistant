@@ -898,9 +898,60 @@ fn main_window_screen_position(window: &tauri::Window) -> Option<WindowPosition>
 
 fn apply_main_window_desktop_layer(window: &tauri::WebviewWindow) {
     apply_main_window_desktop_widget_behavior(window);
+    apply_square_window_region(window, "主窗口桌面挂件行为");
 
     if let Err(error) = window.set_always_on_top(false) {
         app_log::warn(format!("取消主窗口置顶失败：{error}"));
+    }
+}
+
+fn apply_square_window_region(window: &tauri::WebviewWindow, context: &str) {
+    let Ok(hwnd) = window.hwnd() else {
+        app_log::warn(format!("{context}设置直角窗口区域失败：无法获取 HWND"));
+        return;
+    };
+
+    apply_square_hwnd_region(hwnd.0 as _, context);
+}
+
+fn apply_square_tauri_window_region(window: &tauri::Window, context: &str) {
+    let Ok(hwnd) = window.hwnd() else {
+        app_log::warn(format!("{context}设置直角窗口区域失败：无法获取 HWND"));
+        return;
+    };
+
+    apply_square_hwnd_region(hwnd.0 as _, context);
+}
+
+fn apply_square_hwnd_region(hwnd: windows_sys::Win32::Foundation::HWND, context: &str) {
+    use windows_sys::Win32::{
+        Foundation::RECT,
+        Graphics::Gdi::{CreateRectRgn, SetWindowRgn},
+        UI::WindowsAndMessaging::GetClientRect,
+    };
+
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+
+    unsafe {
+        if GetClientRect(hwnd, &mut rect) == 0 {
+            app_log::warn(format!("{context}设置直角窗口区域失败：GetClientRect 调用失败"));
+            return;
+        }
+
+        let region = CreateRectRgn(0, 0, rect.right - rect.left, rect.bottom - rect.top);
+        if region.is_null() {
+            app_log::warn(format!("{context}设置直角窗口区域失败：CreateRectRgn 调用失败"));
+            return;
+        }
+
+        if SetWindowRgn(hwnd, region, 1) == 0 {
+            app_log::warn(format!("{context}设置直角窗口区域失败：SetWindowRgn 调用失败"));
+        }
     }
 }
 
@@ -1134,6 +1185,8 @@ fn apply_main_window_lock_state(app: &tauri::AppHandle, locked: bool) {
         if let Err(error) = window.set_resizable(!locked) {
             app_log::warn(format!("更新主窗口缩放状态失败：{error}"));
         }
+
+        apply_square_window_region(&window, "更新主窗口锁定状态后");
     } else {
         app_log::warn("更新主窗口缩放状态失败：没有找到主窗口");
     }
@@ -1316,6 +1369,9 @@ pub fn run() {
             WindowEvent::Moved(position) if window.label() == MAIN_WINDOW_LABEL => {
                 let state = window.state::<AssistantState>();
                 persist_main_window_position(window, state, position);
+            }
+            WindowEvent::Resized(_) if window.label() == MAIN_WINDOW_LABEL => {
+                apply_square_tauri_window_region(window, "主窗口尺寸变化后");
             }
             _ => {}
         })
