@@ -98,6 +98,8 @@
   let mainWindowOpacityPercent = $state(5);
   // 防止自动刷新和手动刷新重入。
   let refreshInFlight = false;
+  // 标记是否已经拿到过后端推荐数据。
+  let hasLoadedRecommendations = false;
   // 保存自动刷新定时器句柄。
   let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
   // 保存设置事件监听的取消函数。
@@ -178,12 +180,19 @@
     try {
       snapshot = await invoke<AssistantSnapshot>("get_recommendations");
       refreshedAt = formatNow();
+      hasLoadedRecommendations = true;
       writeLog(`制作推荐刷新完成：${snapshot.updatedAt}`);
     } catch (cause) {
-      snapshot = previewSnapshot;
-      refreshedAt = formatNow();
-      error = cause instanceof Error ? cause.message : "当前使用浏览器预览数据";
-      writeLog(`制作推荐加载失败，已使用预览数据：${error}`);
+      const message = cause instanceof Error ? cause.message : "当前刷新失败";
+      if (hasLoadedRecommendations) {
+        error = `制作推荐刷新失败，已保留上一次数据：${message}`;
+        writeLog(error);
+      } else {
+        snapshot = previewSnapshot;
+        refreshedAt = formatNow();
+        error = `制作推荐初始化失败，当前使用浏览器预览数据：${message}`;
+        writeLog(error);
+      }
     } finally {
       loading = false;
       refreshInFlight = false;
