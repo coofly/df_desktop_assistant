@@ -10,13 +10,11 @@ use std::{
 };
 use tauri::{
     menu::{Menu, MenuBuilder, MenuItemBuilder},
-    tray::TrayIconBuilder,
     Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const SETTINGS_WINDOW_LABEL: &str = "settings";
-const TRAY_TOGGLE: &str = "toggle_window";
 const TRAY_SETTINGS: &str = "open_settings";
 const TRAY_LOCK: &str = "lock_window";
 const TRAY_UNLOCK: &str = "unlock_window";
@@ -581,16 +579,6 @@ fn clean_log_part(text: &str) -> String {
     cleaned
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        app_log::debug("显示主窗口并保持底层");
-        let _ = window.show();
-        apply_main_window_bottom_layer(&window);
-    } else {
-        app_log::warn("显示主窗口失败：没有找到主窗口");
-    }
-}
-
 fn restore_main_window_position(app: &tauri::AppHandle) {
     let state = app.state::<AssistantState>();
     let position = match read_window_position_file(&state.window_state_path) {
@@ -628,24 +616,6 @@ fn persist_main_window_position(
 
     if let Err(error) = write_window_position_file(&state.window_state_path, &position) {
         app_log::warn(format!("保存主窗口位置失败：{error}"));
-    }
-}
-
-fn toggle_main_window(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        match window.is_visible() {
-            Ok(true) => {
-                app_log::info("托盘菜单触发：隐藏主窗口");
-                let _ = window.hide();
-            }
-            _ => {
-                app_log::info("托盘菜单触发：显示主窗口");
-                let _ = window.show();
-                apply_main_window_bottom_layer(&window);
-            }
-        }
-    } else {
-        app_log::warn("托盘菜单切换主窗口失败：没有找到主窗口");
     }
 }
 
@@ -754,6 +724,7 @@ fn open_settings_window(app: &tauri::AppHandle) {
     .inner_size(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT)
     .min_inner_size(320.0, 320.0)
     .resizable(false)
+    .skip_taskbar(true)
     .always_on_top(true)
     .build()
     .and_then(|window| {
@@ -769,14 +740,13 @@ fn open_settings_window(app: &tauri::AppHandle) {
 }
 
 fn create_assistant_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri::Result<Menu<R>> {
-    let show_hide = MenuItemBuilder::with_id(TRAY_TOGGLE, "显示/隐藏窗口").build(manager)?;
     let settings = MenuItemBuilder::with_id(TRAY_SETTINGS, "设置").build(manager)?;
     let lock = MenuItemBuilder::with_id(TRAY_LOCK, "锁定位置").build(manager)?;
     let unlock = MenuItemBuilder::with_id(TRAY_UNLOCK, "解锁位置").build(manager)?;
     let quit = MenuItemBuilder::with_id(TRAY_QUIT, "退出程序").build(manager)?;
 
     MenuBuilder::new(manager)
-        .items(&[&show_hide, &settings, &lock, &unlock])
+        .items(&[&settings, &lock, &unlock])
         .separator()
         .item(&quit)
         .build()
@@ -784,7 +754,6 @@ fn create_assistant_menu<R: tauri::Runtime, M: Manager<R>>(manager: &M) -> tauri
 
 fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
     match id {
-        TRAY_TOGGLE => toggle_main_window(app),
         TRAY_SETTINGS => open_settings_window(app),
         TRAY_LOCK => {
             app_log::info("菜单触发：锁定窗口位置");
@@ -797,10 +766,9 @@ fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
             let state = app.state::<AssistantState>();
             set_lock_value(&state, false);
             apply_main_window_lock_state(app, false);
-            show_main_window(app);
         }
         TRAY_QUIT => {
-            app_log::info("菜单触发：退出程序");
+            app_log::info("标题栏菜单触发：退出程序");
             app.exit(0)
         }
         unknown => app_log::warn(format!("收到未知菜单事件：{unknown}")),
@@ -808,39 +776,20 @@ fn handle_assistant_menu_event(app: &tauri::AppHandle, id: &str) {
 }
 
 #[tauri::command]
-fn show_tray_menu_at_title_bar(
+fn show_title_bar_menu(
     app: tauri::AppHandle,
     window: tauri::Window,
     x: f64,
     y: f64,
 ) -> Result<(), String> {
     let menu = create_assistant_menu(&app).map_err(|error| error.to_string())?;
-    app_log::debug(format!("标题栏右键打开托盘菜单：x={x:.0}, y={y:.0}"));
+    app_log::debug(format!("标题栏右键打开菜单：x={x:.0}, y={y:.0}"));
     window
         .popup_menu_at(&menu, tauri::LogicalPosition::new(x, y))
         .map_err(|error| {
             app_log::warn(format!("标题栏右键菜单打开失败：{error}"));
             error.to_string()
         })
-}
-
-fn create_tray(app: &tauri::App) -> tauri::Result<()> {
-    app_log::debug("开始创建系统托盘图标和菜单");
-    let menu = create_assistant_menu(app)?;
-    let icon = app.default_window_icon().cloned();
-    let mut tray_builder = TrayIconBuilder::new()
-        .menu(&menu)
-        .show_menu_on_left_click(true)
-        .tooltip("三角洲行动特勤处制作助手")
-        .on_menu_event(|app, event| handle_assistant_menu_event(app, event.id().as_ref()));
-
-    if let Some(icon) = icon {
-        tray_builder = tray_builder.icon(icon);
-    }
-
-    tray_builder.build(app)?;
-    app_log::info("系统托盘图标创建成功");
-    Ok(())
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -852,9 +801,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AssistantState::new(app_data_dir.clone()))
+        .on_menu_event(|app, event| handle_assistant_menu_event(app, event.id().as_ref()))
         .setup(|app| {
             app_log::debug("Tauri setup 开始执行");
-            create_tray(app)?;
             restore_main_window_position(app.handle());
             apply_main_window_bottom_layer_by_app(app.handle());
             app_log::debug("Tauri setup 执行完成");
@@ -865,14 +814,6 @@ pub fn run() {
                 WindowEvent::Moved(position) if window.label() == MAIN_WINDOW_LABEL => {
                     let state = window.state::<AssistantState>();
                     persist_main_window_position(state, position);
-                }
-                WindowEvent::CloseRequested { api, .. } => {
-                    app_log::info(format!(
-                        "窗口 {} 收到关闭请求，改为隐藏到托盘",
-                        window.label()
-                    ));
-                    api.prevent_close();
-                    let _ = window.hide();
                 }
                 _ => {}
             }
@@ -885,7 +826,7 @@ pub fn run() {
             save_settings,
             start_window_drag,
             start_window_resize,
-            show_tray_menu_at_title_bar,
+            show_title_bar_menu,
             write_frontend_log,
             get_log_file_path
         ])

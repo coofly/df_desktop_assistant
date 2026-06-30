@@ -227,7 +227,7 @@
     event.stopPropagation();
 
     try {
-      await invoke("show_tray_menu_at_title_bar", {
+      await invoke("show_title_bar_menu", {
         x: event.clientX,
         y: event.clientY
       });
