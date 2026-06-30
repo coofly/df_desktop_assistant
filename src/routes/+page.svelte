@@ -387,9 +387,12 @@
   }
 
   .assistant-shell {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 10px;
     width: 100vw;
     height: 100vh;
-    padding: 10px 12px;
+    padding: 10px;
     background: var(--panel-bg, rgb(239 240 238 / 85%));
     border: 1px solid #303336;
     box-shadow: none;
@@ -401,7 +404,6 @@
     align-items: center;
     justify-content: space-between;
     gap: 18px;
-    margin-bottom: 10px;
     border: 1px solid #50545a;
     padding: 7px 8px;
     cursor: grab;
@@ -502,12 +504,13 @@
     display: grid;
     grid-template-columns: repeat(4, minmax(200px, 1fr));
     gap: 14px;
+    min-height: 0;
   }
 
   .card {
     display: grid;
     grid-template-columns: minmax(124px, 1fr) 118px;
-    min-height: 140px;
+    min-height: 0;
     overflow: hidden;
     border: 1px solid #50545a;
     border-radius: 0;

@@ -33,6 +33,8 @@ const MIN_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
 const DEFAULT_MAIN_WINDOW_OPACITY_PERCENT: u8 = 5;
 const MAX_MAIN_WINDOW_OPACITY_PERCENT: u8 = 100;
 const APP_DATA_DIR_NAME: &str = "Delta Force Craft Assistant";
+const SETTINGS_WINDOW_WIDTH: f64 = 360.0;
+const SETTINGS_WINDOW_HEIGHT: f64 = 340.0;
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -622,9 +624,68 @@ fn toggle_main_window(app: &tauri::AppHandle) {
     }
 }
 
+fn anchored_popup_position(
+    main_position: tauri::PhysicalPosition<i32>,
+    main_size: tauri::PhysicalSize<u32>,
+    popup_size: tauri::PhysicalSize<u32>,
+    work_area_position: tauri::PhysicalPosition<i32>,
+) -> tauri::PhysicalPosition<i32> {
+    let work_top = work_area_position.y;
+    let popup_height = popup_size.height as i32;
+
+    let y = if main_position.y - popup_height >= work_top {
+        main_position.y - popup_height
+    } else {
+        main_position.y + main_size.height as i32
+    };
+
+    tauri::PhysicalPosition::new(main_position.x, y)
+}
+
+fn position_popup_window_next_to_main(
+    main_window: &tauri::WebviewWindow,
+    popup_window: &tauri::WebviewWindow,
+) -> Result<(), String> {
+    let main_position = main_window.outer_position().map_err(|error| error.to_string())?;
+    let main_size = main_window.outer_size().map_err(|error| error.to_string())?;
+    let popup_size = popup_window.outer_size().map_err(|error| error.to_string())?;
+    let monitor = main_window
+        .current_monitor()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "无法获取主窗口所在显示器".to_string())?;
+    let work_area = monitor.work_area();
+    let position = anchored_popup_position(
+        main_position,
+        main_size,
+        popup_size,
+        work_area.position,
+    );
+
+    popup_window
+        .set_position(position)
+        .map_err(|error| error.to_string())?;
+    app_log::debug(format!(
+        "设置窗口已贴靠主窗口：x={}，y={}",
+        position.x, position.y
+    ));
+    Ok(())
+}
+
+fn place_settings_window(app: &tauri::AppHandle, settings_window: &tauri::WebviewWindow) {
+    let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) else {
+        app_log::warn("设置窗口定位失败：没有找到主窗口");
+        return;
+    };
+
+    if let Err(error) = position_popup_window_next_to_main(&main_window, settings_window) {
+        app_log::warn(format!("设置窗口定位失败：{error}"));
+    }
+}
+
 fn open_settings_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
         app_log::info("显示设置窗口");
+        place_settings_window(app, &window);
         let _ = window.show();
         let _ = window.set_focus();
         return;
@@ -637,12 +698,13 @@ fn open_settings_window(app: &tauri::AppHandle) {
         WebviewUrl::App("/settings".into()),
     )
     .title("设置")
-    .inner_size(360.0, 340.0)
+    .inner_size(SETTINGS_WINDOW_WIDTH, SETTINGS_WINDOW_HEIGHT)
     .min_inner_size(320.0, 320.0)
     .resizable(false)
     .always_on_top(true)
     .build()
     .and_then(|window| {
+        place_settings_window(app, &window);
         let _ = window.set_focus();
         Ok(window)
     });
@@ -910,6 +972,42 @@ mod tests {
         fs::remove_file(path).expect("test window position file can be removed");
 
         assert_eq!(loaded, Some(position));
+    }
+
+    #[test]
+    fn popup_position_uses_space_above_main_window_first() {
+        let position = anchored_popup_position(
+            tauri::PhysicalPosition::new(200, 500),
+            tauri::PhysicalSize::new(1000, 260),
+            tauri::PhysicalSize::new(360, 340),
+            tauri::PhysicalPosition::new(0, 0),
+        );
+
+        assert_eq!(position, tauri::PhysicalPosition::new(200, 160));
+    }
+
+    #[test]
+    fn popup_position_falls_below_main_window_without_top_space() {
+        let position = anchored_popup_position(
+            tauri::PhysicalPosition::new(200, 120),
+            tauri::PhysicalSize::new(1000, 260),
+            tauri::PhysicalSize::new(360, 340),
+            tauri::PhysicalPosition::new(0, 0),
+        );
+
+        assert_eq!(position, tauri::PhysicalPosition::new(200, 380));
+    }
+
+    #[test]
+    fn popup_position_aligns_left_edge_with_main_window() {
+        let position = anchored_popup_position(
+            tauri::PhysicalPosition::new(1780, 500),
+            tauri::PhysicalSize::new(1000, 260),
+            tauri::PhysicalSize::new(360, 340),
+            tauri::PhysicalPosition::new(0, 0),
+        );
+
+        assert_eq!(position, tauri::PhysicalPosition::new(1780, 160));
     }
 
     #[test]
