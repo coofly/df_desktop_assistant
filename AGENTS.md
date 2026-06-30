@@ -4,6 +4,8 @@
 
 这是一个三角洲行动特勤处制作产物推荐桌面小助手，技术栈为 Rust + Tauri 2 + SvelteKit。第一屏应始终是可用的桌面助手面板，不要做营销页或无关 landing page。
 
+本项目只面向 Windows 运行，不需要为 macOS/Linux/Web 等非 Windows 平台保留实现、分支或兜底逻辑。
+
 ## Windows PowerShell / SSH 规则
 
 在 Windows PowerShell 中通过 ssh 执行远端多段 shell 脚本时，外层优先用单引号包住远端命令，避免本地 PowerShell 提前解析 `$变量`、分号、双引号和 `curl -w "%{...}"`。
