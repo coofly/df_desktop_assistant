@@ -81,7 +81,7 @@ impl AssistantState {
             window_state_path,
             cached_recommendations: Mutex::new(None),
             image_cache: image_cache::ImageCache::new(&app_data_dir),
-            kkrb_client: kkrb::KkrbClient::new(app_data_dir.join("kkrb_cookies.txt")),
+            kkrb_client: kkrb::KkrbClient::new(app_data_dir.join("kkrb_session.json")),
         }
     }
 }
