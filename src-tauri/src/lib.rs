@@ -1,8 +1,11 @@
 //! 组装 Tauri 应用、命令入口和助手共享状态。
 
+mod app_data;
 mod app_log;
+mod image_cache;
 mod kkrb;
 mod models;
+mod recommendations;
 mod startup;
 mod windowing;
 
@@ -10,6 +13,7 @@ use models::{
     AssistantSettings, AssistantSnapshot, CraftRecommendation, StoredAssistantSettings,
     WindowStateFile,
 };
+use recommendations::{mock_recommendations, snapshot_with_recommendations};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -35,7 +39,6 @@ const TRAY_QUIT: &str = "quit_app";
 const SETTINGS_FILE_NAME: &str = "settings.json";
 const WINDOW_STATE_FILE_NAME: &str = "window-state.json";
 const SETTINGS_UPDATED_EVENT: &str = "settings-updated";
-const APP_DATA_DIR_NAME: &str = "Delta Force Craft Assistant";
 pub(crate) const SETTINGS_WINDOW_WIDTH: f64 = 360.0;
 pub(crate) const SETTINGS_WINDOW_HEIGHT: f64 = 390.0;
 pub(crate) const SETTINGS_WINDOW_MAIN_GAP: i32 = 3;
@@ -47,6 +50,7 @@ pub(crate) struct AssistantState {
     settings_path: PathBuf,
     pub(crate) window_state_path: PathBuf,
     cached_recommendations: Mutex<Option<Vec<CraftRecommendation>>>,
+    image_cache: image_cache::ImageCache,
     kkrb_client: kkrb::KkrbClient,
 }
 
@@ -76,7 +80,8 @@ impl AssistantState {
             settings_path,
             window_state_path,
             cached_recommendations: Mutex::new(None),
-            kkrb_client: kkrb::KkrbClient::default(),
+            image_cache: image_cache::ImageCache::new(&app_data_dir),
+            kkrb_client: kkrb::KkrbClient::new(app_data_dir.join("kkrb_cookies.txt")),
         }
     }
 }
@@ -90,12 +95,7 @@ impl Default for AssistantState {
 
 /// 计算助手使用的应用数据目录。
 fn default_app_data_dir() -> PathBuf {
-    let base_dir = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(std::env::temp_dir);
-
-    base_dir.join(APP_DATA_DIR_NAME)
+    app_data::canonical_app_data_dir()
 }
 
 /// 将布尔开关转换为中文日志文本。
@@ -219,69 +219,6 @@ pub(crate) fn write_window_state_file(
     Ok(())
 }
 
-/// 提供无网络或失败兜底的本地推荐数据。
-fn mock_recommendations() -> Vec<CraftRecommendation> {
-    vec![
-        CraftRecommendation {
-            id: "tech-x25u".to_string(),
-            station: "技术中心".to_string(),
-            category: "工具".to_string(),
-            item_name: "X25U斜侧战斗握把".to_string(),
-            image_url: None,
-            current_profit: 6027,
-            ideal_price: 35699,
-            sell_time: "晚上11点".to_string(),
-            accent: "#6f5a91".to_string(),
-        },
-        CraftRecommendation {
-            id: "workbench-45-70".to_string(),
-            station: "工作台".to_string(),
-            category: "弹药".to_string(),
-            item_name: "45-70 Govt FTX".to_string(),
-            image_url: None,
-            current_profit: 36888,
-            ideal_price: 5795,
-            sell_time: "晚上11点".to_string(),
-            accent: "#a77452".to_string(),
-        },
-        CraftRecommendation {
-            id: "pharma-advanced-kit".to_string(),
-            station: "制药台".to_string(),
-            category: "医疗".to_string(),
-            item_name: "高级护甲维修组合".to_string(),
-            image_url: None,
-            current_profit: 5227,
-            ideal_price: 328570,
-            sell_time: "晚上11点".to_string(),
-            accent: "#a84d50".to_string(),
-        },
-        CraftRecommendation {
-            id: "armor-helmet".to_string(),
-            station: "防具台".to_string(),
-            category: "防具".to_string(),
-            item_name: "精英防弹背心".to_string(),
-            image_url: None,
-            current_profit: 23378,
-            ideal_price: 336490,
-            sell_time: "晚上11点".to_string(),
-            accent: "#a97752".to_string(),
-        },
-    ]
-}
-
-/// 将锁定状态、更新时间和推荐列表组合成快照。
-fn snapshot_with_recommendations(
-    locked: bool,
-    updated_at: impl Into<String>,
-    recommendations: Vec<CraftRecommendation>,
-) -> AssistantSnapshot {
-    AssistantSnapshot {
-        locked,
-        updated_at: updated_at.into(),
-        recommendations,
-    }
-}
-
 /// 读取当前窗口锁定状态。
 pub(crate) fn lock_value(state: &AssistantState) -> bool {
     *state.locked.lock().expect("assistant state lock poisoned")
@@ -312,7 +249,10 @@ fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
 
     match state.kkrb_client.fetch_live_recommendations() {
         Ok(result) => {
-            let recommendations = result.recommendations;
+            let mut recommendations = result.recommendations;
+            state
+                .image_cache
+                .cache_recommendation_images(&mut recommendations);
             app_log::info(format!(
                 "制作推荐获取成功，来源：kkrb 实时数据，session：{}，数量：{}",
                 result.session_source.label(),
@@ -633,7 +573,7 @@ fn show_title_bar_menu(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// 启动 Tauri 应用并注册命令、菜单和窗口事件。
 pub fn run() {
-    let app_data_dir = default_app_data_dir();
+    let app_data_dir = app_data::prepare_app_data_dir();
     let log_path = app_log::init(app_data_dir.clone());
     app_log::info(format!("应用启动，日志文件：{}", log_path.display()));
 
@@ -836,6 +776,7 @@ mod tests {
             settings_path: path.with_file_name("unused-settings.json"),
             window_state_path: path.clone(),
             cached_recommendations: Mutex::new(None),
+            image_cache: image_cache::ImageCache::new(&std::env::temp_dir()),
             kkrb_client: kkrb::KkrbClient::default(),
         };
         let position = WindowPosition { x: 320, y: 180 };

@@ -1,6 +1,6 @@
 <script lang="ts">
   // 文件说明：主面板展示制作推荐、刷新状态和窗口锁定控制。
-  import { invoke } from "@tauri-apps/api/core";
+  import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import type { UnlistenFn } from "@tauri-apps/api/event";
 
   // 制作推荐条目的前端展示结构。
@@ -179,6 +179,7 @@
 
     try {
       snapshot = await invoke<AssistantSnapshot>("get_recommendations");
+      failedImages = new Set();
       refreshedAt = formatNow();
       hasLoadedRecommendations = true;
       writeLog(`制作推荐刷新完成：${snapshot.updatedAt}`);
@@ -288,6 +289,11 @@
   function markImageFailed(id: string) {
     failedImages = new Set([...failedImages, id]);
     writeLog(`物品图片加载失败，已显示文字占位：${id}`);
+  }
+
+  // 将后端返回的本地缓存路径转换为 WebView 可读取的资源地址。
+  function resolveImageSource(imageUrl: string) {
+    return /^https?:\/\//i.test(imageUrl) ? imageUrl : convertFileSrc(imageUrl);
   }
 
   $effect(() => {
@@ -415,7 +421,7 @@
             {#if recommendation.imageUrl && !failedImages.has(recommendation.id)}
               <img
                 class="item-image"
-                src={recommendation.imageUrl}
+                src={resolveImageSource(recommendation.imageUrl)}
                 alt=""
                 loading="lazy"
                 onerror={() => markImageFailed(recommendation.id)}

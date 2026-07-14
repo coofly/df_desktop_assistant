@@ -1,12 +1,11 @@
 //! 封装 kkrb.net 实时推荐数据的会话获取、缓存和解析。
 
-use reqwest::header::{HeaderMap, HeaderValue, COOKIE, ORIGIN, REFERER, SET_COOKIE};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::{
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::Mutex,
-    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use crate::{app_log, models::CraftRecommendation};
@@ -16,16 +15,14 @@ const USER_AGENT: &str = concat!(
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
 );
-const SESSION_CACHE_FILE: &str = "kkrb_session.json";
+const SESSION_CACHE_FILE: &str = "kkrb_cookies.txt";
 const REQUEST_TIMEOUT_SECONDS: u64 = 20;
-const CONNECT_TIMEOUT_SECONDS: u64 = 8;
 
-/// 持有 kkrb HTTP 客户端和会话缓存。
+/// 持有 kkrb 会话缓存。
 #[derive(Debug)]
 pub struct KkrbClient {
-    client: reqwest::blocking::Client,
-    session_cache_path: PathBuf,
-    session: Mutex<Option<KkrbSession>>,
+    cookie_cache_path: PathBuf,
+    session_initialized: Mutex<bool>,
 }
 
 /// 表示一次 kkrb 推荐数据获取结果。
@@ -48,19 +45,10 @@ impl KkrbSessionSource {
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Memory => "内存 session",
-            Self::LocalFile => "本地 kkrb_session.json",
-            Self::PhpSession => "从 PHPSESSID 新建",
+            Self::LocalFile => "本地 kkrb_cookies.txt",
+            Self::PhpSession => "从完整 Cookie 新建",
         }
     }
-}
-
-/// 缓存 kkrb 请求所需的 PHP session 和数据版本。
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KkrbSession {
-    php_session_id: String,
-    built_ver: String,
-    saved_at_unix_seconds: u64,
 }
 
 /// 对应 kkrb getMenu 接口响应。
@@ -69,7 +57,6 @@ struct MenuResponse {
     code: i32,
     #[serde(default)]
     msg: String,
-    built_ver: Option<String>,
 }
 
 /// 对应 kkrb getOVData 概览接口响应。
@@ -114,16 +101,15 @@ impl Default for KkrbClient {
 
 impl KkrbClient {
     /// 使用指定会话缓存路径创建客户端。
-    fn new(session_cache_path: PathBuf) -> Self {
+    pub(crate) fn new(cookie_cache_path: PathBuf) -> Self {
         app_log::debug(format!(
-            "初始化 kkrb 客户端，会话缓存路径：{}",
-            session_cache_path.display()
+            "初始化 kkrb 客户端，Cookie 缓存路径：{}",
+            cookie_cache_path.display()
         ));
 
         Self {
-            client: build_client().expect("failed to build kkrb client"),
-            session_cache_path,
-            session: Mutex::new(None),
+            cookie_cache_path,
+            session_initialized: Mutex::new(false),
         }
     }
 
@@ -131,13 +117,9 @@ impl KkrbClient {
     pub fn fetch_live_recommendations(&self) -> Result<KkrbFetchResult, String> {
         app_log::debug("开始获取 kkrb 实时制作推荐");
 
-        if let Some((session, session_source)) = self.cached_session() {
-            app_log::debug(format!(
-                "准备使用 kkrb {} 请求数据，版本号：{}",
-                session_source.label(),
-                session.built_ver,
-            ));
-            if let Ok(recommendations) = self.fetch_with_session(&session) {
+        if let Some(session_source) = self.cached_session_source() {
+            app_log::debug(format!("准备使用 kkrb {} 请求数据", session_source.label()));
+            if let Ok(recommendations) = self.fetch_with_session() {
                 app_log::debug(format!(
                     "使用 kkrb {} 获取成功，推荐数量：{}",
                     session_source.label(),
@@ -153,10 +135,15 @@ impl KkrbClient {
                 "kkrb {} 请求失败，将重新初始化会话",
                 session_source.label()
             ));
+            let _ = fs::remove_file(&self.cookie_cache_path);
+            *self
+                .session_initialized
+                .lock()
+                .expect("kkrb session lock poisoned") = false;
         }
 
-        let session = self.initialize_session()?;
-        let recommendations = self.fetch_with_session(&session)?;
+        self.initialize_session()?;
+        let recommendations = self.fetch_with_session()?;
         app_log::debug(format!(
             "使用 kkrb {} 获取成功，推荐数量：{}",
             KkrbSessionSource::PhpSession.label(),
@@ -169,64 +156,52 @@ impl KkrbClient {
     }
 
     /// 尝试从内存或磁盘读取可复用会话。
-    fn cached_session(&self) -> Option<(KkrbSession, KkrbSessionSource)> {
-        if let Some(session) = self
-            .session
+    fn cached_session_source(&self) -> Option<KkrbSessionSource> {
+        if *self
+            .session_initialized
             .lock()
             .expect("kkrb session lock poisoned")
-            .clone()
         {
-            app_log::debug(format!(
-                "命中内存中的 kkrb 会话缓存，保存时间戳：{}",
-                session.saved_at_unix_seconds
-            ));
-            return Some((session, KkrbSessionSource::Memory));
+            app_log::debug("命中内存中的 kkrb Cookie 会话");
+            return Some(KkrbSessionSource::Memory);
         }
 
-        let session = match read_session_cache(&self.session_cache_path) {
-            Ok(session) => session,
-            Err(error) => {
-                app_log::debug(format!("没有可用的 kkrb 磁盘会话缓存：{error}"));
-                return None;
-            }
-        };
-        app_log::debug(format!(
-            "读取 kkrb 磁盘会话缓存成功，版本号：{}",
-            session.built_ver
-        ));
-        *self.session.lock().expect("kkrb session lock poisoned") = Some(session.clone());
-        Some((session, KkrbSessionSource::LocalFile))
+        let available = fs::metadata(&self.cookie_cache_path)
+            .map(|metadata| metadata.is_file() && metadata.len() > 0)
+            .unwrap_or(false);
+        if !available {
+            app_log::debug("没有可用的 kkrb Cookie 磁盘缓存");
+            return None;
+        }
+        *self
+            .session_initialized
+            .lock()
+            .expect("kkrb session lock poisoned") = true;
+        app_log::debug("读取 kkrb Cookie 磁盘缓存成功");
+        Some(KkrbSessionSource::LocalFile)
     }
 
     /// 请求首页和菜单接口初始化新会话。
-    fn initialize_session(&self) -> Result<KkrbSession, String> {
+    fn initialize_session(&self) -> Result<(), String> {
         app_log::debug("开始初始化 kkrb 会话：请求首页");
-        let home_response = self
-            .client
-            .get(format!("{KKRBR_BASE_URL}/?viewpage=view%2Foverview"))
-            .send()
-            .map_err(|error| error.to_string())?;
+        if let Some(parent) = self.cookie_cache_path.parent() {
+            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        }
+        let _ = fs::remove_file(&self.cookie_cache_path);
+        curl_initialize_home(
+            &format!("{KKRBR_BASE_URL}/?viewpage=view%2Foverview"),
+            &self.cookie_cache_path,
+        )?;
+        app_log::debug("kkrb 首页 Cookie 已写入缓存");
 
-        let php_session_id = php_session_id_from_headers(home_response.headers())
-            .ok_or_else(|| "kkrb homepage response missing PHPSESSID".to_string())?;
-        app_log::debug("kkrb 首页返回 PHPSESSID，会话 Cookie 已获取");
-
-        home_response
-            .error_for_status()
-            .map_err(|error| error.to_string())?;
-
-        app_log::debug("开始请求 kkrb getMenu 以获取数据版本号");
-        let menu: MenuResponse = self
-            .client
-            .post(format!("{KKRBR_BASE_URL}/getMenu"))
-            .header(COOKIE, session_cookie_header(&php_session_id))
-            .form(&[("globalData", "false")])
-            .send()
-            .map_err(|error| error.to_string())?
-            .error_for_status()
-            .map_err(|error| error.to_string())?
-            .json()
-            .map_err(|error| error.to_string())?;
+        app_log::debug("开始请求 kkrb getMenu 以初始化会话");
+        let menu_text = curl_post(
+            &format!("{KKRBR_BASE_URL}/getMenu"),
+            &self.cookie_cache_path,
+            &[("globalData", "false")],
+        )?;
+        let menu: MenuResponse =
+            serde_json::from_str(&menu_text).map_err(|error| error.to_string())?;
 
         if menu.code != 1 {
             let message = if menu.msg.is_empty() {
@@ -238,73 +213,23 @@ impl KkrbClient {
             return Err(message);
         }
 
-        let built_ver = menu
-            .built_ver
-            .filter(|version| !version.is_empty())
-            .ok_or_else(|| "kkrb getMenu response missing built_ver".to_string())?;
-        app_log::debug(format!("kkrb getMenu 成功，数据版本号：{built_ver}"));
+        app_log::debug("kkrb getMenu 会话初始化成功");
 
-        let session = KkrbSession {
-            php_session_id,
-            built_ver,
-            saved_at_unix_seconds: unix_timestamp_now(),
-        };
-
-        *self.session.lock().expect("kkrb session lock poisoned") = Some(session.clone());
-        match write_session_cache(&self.session_cache_path, &session) {
-            Ok(()) => app_log::debug("kkrb 会话缓存写入成功"),
-            Err(error) => app_log::warn(format!("kkrb 会话缓存写入失败：{error}")),
-        }
-
-        Ok(session)
+        *self
+            .session_initialized
+            .lock()
+            .expect("kkrb session lock poisoned") = true;
+        Ok(())
     }
 
     /// 使用已有会话请求并解析推荐数据。
-    fn fetch_with_session(
-        &self,
-        session: &KkrbSession,
-    ) -> Result<Vec<CraftRecommendation>, String> {
-        app_log::debug(format!(
-            "开始校验 kkrb UA 状态，版本号：{}",
-            session.built_ver
-        ));
-        let ua_status: serde_json::Value = self
-            .client
-            .post(format!("{KKRBR_BASE_URL}/checkUAStatus"))
-            .header(COOKIE, session_cookie_header(&session.php_session_id))
-            .form(&[("version", session.built_ver.as_str())])
-            .send()
-            .map_err(|error| error.to_string())?
-            .error_for_status()
-            .map_err(|error| error.to_string())?
-            .json()
-            .map_err(|error| error.to_string())?;
-
-        if ua_status.get("code").and_then(|code| code.as_i64()) != Some(1) {
-            let message = ua_status
-                .get("msg")
-                .and_then(|msg| msg.as_str())
-                .unwrap_or("kkrb checkUAStatus failed")
-                .to_string();
-            app_log::warn(format!("kkrb UA 状态校验失败：{message}"));
-            return Err(message);
-        }
-
-        app_log::debug("kkrb UA 状态校验通过，开始请求概览数据");
-        let overview_text = self
-            .client
-            .post(format!("{KKRBR_BASE_URL}/getOVData"))
-            .header(COOKIE, session_cookie_header(&session.php_session_id))
-            .form(&[
-                ("version", session.built_ver.as_str()),
-                ("globalData", "false"),
-            ])
-            .send()
-            .map_err(|error| error.to_string())?
-            .error_for_status()
-            .map_err(|error| error.to_string())?
-            .text()
-            .map_err(|error| error.to_string())?;
+    fn fetch_with_session(&self) -> Result<Vec<CraftRecommendation>, String> {
+        app_log::debug("开始请求 kkrb 概览数据");
+        let overview_text = curl_post(
+            &format!("{KKRBR_BASE_URL}/getOVData"),
+            &self.cookie_cache_path,
+            &[("version", ""), ("globalData", "false")],
+        )?;
 
         app_log::debug(format!(
             "kkrb 概览数据请求成功，响应长度：{} 字节",
@@ -314,28 +239,73 @@ impl KkrbClient {
     }
 }
 
-/// 构建带浏览器请求头和超时设置的 HTTP 客户端。
-fn build_client() -> Result<reqwest::blocking::Client, String> {
-    app_log::debug("开始构建 kkrb HTTP 客户端");
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        "x-requested-with",
-        HeaderValue::from_static("XMLHttpRequest"),
-    );
-    headers.insert(ORIGIN, HeaderValue::from_static(KKRBR_BASE_URL));
-    headers.insert(
-        REFERER,
-        HeaderValue::from_static("https://www.kkrb.net/?viewpage=view%2Foverview"),
-    );
+/// 使用 Windows curl 请求首页并创建完整 Cookie jar。
+fn curl_initialize_home(url: &str, cookie_cache_path: &Path) -> Result<(), String> {
+    let mut arguments = curl_common_arguments();
+    arguments.extend([
+        "-c".to_string(),
+        cookie_cache_path.to_string_lossy().into_owned(),
+        "-o".to_string(),
+        "NUL".to_string(),
+    ]);
+    arguments.push(url.to_string());
+    run_curl(&arguments).map(|_| ())
+}
 
-    reqwest::blocking::Client::builder()
-        .cookie_store(true)
-        .default_headers(headers)
-        .user_agent(USER_AGENT)
-        .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECONDS))
-        .timeout(Duration::from_secs(REQUEST_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|error| error.to_string())
+/// 使用完整 Cookie jar 提交表单并返回响应正文。
+fn curl_post(
+    url: &str,
+    cookie_cache_path: &Path,
+    fields: &[(&str, &str)],
+) -> Result<String, String> {
+    let mut arguments = curl_common_arguments();
+    arguments.extend([
+        "-b".to_string(),
+        cookie_cache_path.to_string_lossy().into_owned(),
+        "-c".to_string(),
+        cookie_cache_path.to_string_lossy().into_owned(),
+        "-X".to_string(),
+        "POST".to_string(),
+    ]);
+    for (name, value) in fields {
+        arguments.push("--data-urlencode".to_string());
+        arguments.push(format!("{name}={value}"));
+    }
+    arguments.push(url.to_string());
+    run_curl(&arguments)
+}
+
+/// 构建 kkrb 请求共用的 curl 参数。
+fn curl_common_arguments() -> Vec<String> {
+    vec![
+        "-sS".to_string(),
+        "--fail-with-body".to_string(),
+        "--max-time".to_string(),
+        REQUEST_TIMEOUT_SECONDS.to_string(),
+        "-A".to_string(),
+        USER_AGENT.to_string(),
+        "-H".to_string(),
+        "Origin: https://www.kkrb.net".to_string(),
+        "-H".to_string(),
+        "Referer: https://www.kkrb.net/?viewpage=view%2Foverview".to_string(),
+        "-H".to_string(),
+        "X-Requested-With: XMLHttpRequest".to_string(),
+    ]
+}
+
+/// 执行固定的 curl.exe 请求并检查退出状态和 UTF-8 输出。
+fn run_curl(arguments: &[String]) -> Result<String, String> {
+    let output = Command::new("curl.exe")
+        .args(arguments)
+        .output()
+        .map_err(|error| format!("启动 curl.exe 失败：{error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "curl.exe 请求失败：{}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|error| format!("curl.exe 响应不是 UTF-8：{error}"))
 }
 
 /// 计算 kkrb 会话缓存文件路径。
@@ -348,62 +318,6 @@ fn default_session_cache_path() -> PathBuf {
     base_dir
         .join("com.coofly.df-desktop-assistant")
         .join(SESSION_CACHE_FILE)
-}
-
-/// 从响应头集合中提取 PHPSESSID。
-fn php_session_id_from_headers(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get_all(SET_COOKIE)
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .find_map(php_session_id_from_set_cookie)
-}
-
-/// 从单条 Set-Cookie 中提取 PHPSESSID。
-fn php_session_id_from_set_cookie(set_cookie: &str) -> Option<String> {
-    let cookie = set_cookie.split(';').next()?.trim();
-    cookie
-        .strip_prefix("PHPSESSID=")
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-/// 生成携带 PHPSESSID 的 Cookie 请求头。
-fn session_cookie_header(php_session_id: &str) -> String {
-    format!("PHPSESSID={php_session_id}")
-}
-
-/// 从磁盘读取并校验 kkrb 会话缓存。
-fn read_session_cache(path: &Path) -> Result<KkrbSession, String> {
-    app_log::debug(format!("准备读取 kkrb 会话缓存：{}", path.display()));
-    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    let session: KkrbSession =
-        serde_json::from_str(&contents).map_err(|error| error.to_string())?;
-
-    if session.php_session_id.trim().is_empty() || session.built_ver.trim().is_empty() {
-        return Err("kkrb session cache is incomplete".to_string());
-    }
-
-    Ok(session)
-}
-
-/// 将 kkrb 会话缓存写入磁盘。
-fn write_session_cache(path: &Path, session: &KkrbSession) -> Result<(), String> {
-    app_log::debug(format!("准备写入 kkrb 会话缓存：{}", path.display()));
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    let contents = serde_json::to_string_pretty(session).map_err(|error| error.to_string())?;
-    fs::write(path, contents).map_err(|error| error.to_string())
-}
-
-/// 返回当前 Unix 秒级时间戳。
-fn unix_timestamp_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
 }
 
 /// 将 kkrb 概览 JSON 标准化为前端推荐列表。
@@ -561,41 +475,20 @@ mod tests {
         assert_eq!(error, "系统繁忙，请稍后再试");
     }
 
+    /// 验证当前菜单响应结构可以正常解析。
     #[test]
-    fn extracts_php_session_id_from_set_cookie() {
-        let session_id = php_session_id_from_set_cookie(
-            "PHPSESSID=abc123; expires=Sun, 28-Jun-2026 18:29:13 GMT; path=/; HttpOnly",
-        );
+    fn parses_current_menu_response() {
+        let menu: MenuResponse = serde_json::from_str(r#"{"code":1,"msg":""}"#).unwrap();
 
-        assert_eq!(session_id.as_deref(), Some("abc123"));
-        assert_eq!(session_cookie_header("abc123"), "PHPSESSID=abc123");
-    }
-
-    #[test]
-    fn writes_and_reads_session_cache() {
-        let path = std::env::temp_dir().join(format!(
-            "df_desktop_assistant_kkrb_session_{}.json",
-            unix_timestamp_now()
-        ));
-        let session = KkrbSession {
-            php_session_id: "cached-session".to_string(),
-            built_ver: "cached-built-ver".to_string(),
-            saved_at_unix_seconds: 123,
-        };
-
-        write_session_cache(&path, &session).expect("session cache write");
-        let restored = read_session_cache(&path).expect("session cache read");
-        let _ = fs::remove_file(&path);
-
-        assert_eq!(restored, session);
+        assert_eq!(menu.code, 1);
     }
 
     #[test]
     #[ignore = "hits live kkrb.net"]
     fn fetches_live_swat_products() {
         let cache_path = std::env::temp_dir().join(format!(
-            "df_desktop_assistant_kkrb_live_session_{}.json",
-            unix_timestamp_now()
+            "df_desktop_assistant_kkrb_live_cookies_{}.txt",
+            std::process::id()
         ));
         let recommendations = KkrbClient::new(cache_path.clone())
             .fetch_live_recommendations()
