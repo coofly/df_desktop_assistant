@@ -256,8 +256,8 @@ fn apply_main_window_desktop_widget_behavior(window: &tauri::WebviewWindow) {
                 x + width < 0 || y + height < 0 || x > parent_width || y > parent_height;
 
             if needs_recenter || width <= 0 || height <= 0 {
-                x = (parent_width - 1120).max(0) / 2;
-                y = (parent_height - 244).max(0) / 2;
+                x = (parent_width - width.max(1)).max(0) / 2;
+                y = (parent_height - height.max(1)).max(0) / 2;
             }
 
             let _ = SetWindowPos(

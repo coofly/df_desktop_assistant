@@ -1,4 +1,4 @@
-//! 封装 kkrb.net 实时推荐数据的会话获取、缓存和解析。
+//! 封装 kkrb.net 概览数据的会话获取、缓存和制作推荐解析。
 
 use reqwest::header::{HeaderMap, HeaderValue, COOKIE, ORIGIN, REFERER, SET_COOKIE};
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ pub struct KkrbClient {
     client: reqwest::blocking::Client,
     session_cache_path: PathBuf,
     session: Mutex<Option<KkrbSession>>,
+    request_lock: Mutex<()>,
 }
 
 /// 表示一次 kkrb 推荐数据获取结果。
@@ -122,25 +123,37 @@ impl KkrbClient {
             client: build_client().expect("failed to build kkrb client"),
             session_cache_path,
             session: Mutex::new(None),
+            request_lock: Mutex::new(()),
         }
     }
 
     /// 获取实时推荐并自动回收可用会话。
     pub fn fetch_live_recommendations(&self) -> Result<KkrbFetchResult, String> {
         app_log::debug("开始获取 kkrb 实时制作推荐");
+        let (recommendations, session_source) =
+            self.fetch_overview(normalize_swat_recommendations)?;
+        Ok(KkrbFetchResult {
+            recommendations,
+            session_source,
+        })
+    }
 
+    /// 串行复用概览会话，并使用指定解析器读取独立数据块。
+    pub(crate) fn fetch_overview<T>(
+        &self,
+        normalize: fn(&str) -> Result<T, String>,
+    ) -> Result<(T, KkrbSessionSource), String> {
+        let _request = self
+            .request_lock
+            .lock()
+            .expect("kkrb request lock poisoned");
         if let Some((session, session_source)) = self.cached_session() {
             app_log::debug(format!("准备使用 kkrb {} 请求数据", session_source.label()));
-            if let Ok(recommendations) = self.fetch_with_session(&session) {
-                app_log::debug(format!(
-                    "使用 kkrb {} 获取成功，推荐数量：{}",
-                    session_source.label(),
-                    recommendations.len()
-                ));
-                return Ok(KkrbFetchResult {
-                    recommendations,
-                    session_source,
-                });
+            if let Ok(data) = self
+                .fetch_with_session(&session)
+                .and_then(|text| normalize(&text))
+            {
+                return Ok((data, session_source));
             }
 
             app_log::warn(format!(
@@ -152,16 +165,8 @@ impl KkrbClient {
         }
 
         let session = self.initialize_session()?;
-        let recommendations = self.fetch_with_session(&session)?;
-        app_log::debug(format!(
-            "使用 kkrb {} 获取成功，推荐数量：{}",
-            KkrbSessionSource::PhpSession.label(),
-            recommendations.len()
-        ));
-        Ok(KkrbFetchResult {
-            recommendations,
-            session_source: KkrbSessionSource::PhpSession,
-        })
+        let data = normalize(&self.fetch_with_session(&session)?)?;
+        Ok((data, KkrbSessionSource::PhpSession))
     }
 
     /// 尝试从内存或磁盘读取可复用会话。
@@ -236,11 +241,8 @@ impl KkrbClient {
         Ok(session)
     }
 
-    /// 使用已有会话请求并解析推荐数据。
-    fn fetch_with_session(
-        &self,
-        session: &KkrbSession,
-    ) -> Result<Vec<CraftRecommendation>, String> {
+    /// 使用已有会话请求概览 JSON，供各数据块独立解析。
+    fn fetch_with_session(&self, session: &KkrbSession) -> Result<String, String> {
         app_log::debug("开始请求 kkrb 概览数据");
         let overview_text = self
             .client
@@ -258,7 +260,7 @@ impl KkrbClient {
             "kkrb 概览数据请求成功，响应长度：{} 字节",
             overview_text.len()
         ));
-        normalize_swat_recommendations(&overview_text)
+        Ok(overview_text)
     }
 }
 

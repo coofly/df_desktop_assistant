@@ -4,16 +4,13 @@ mod app_data;
 mod app_log;
 mod image_cache;
 mod kkrb;
+mod map_passwords;
 mod models;
 mod recommendations;
 mod startup;
 mod windowing;
 
-use models::{
-    AssistantSettings, AssistantSnapshot, CraftRecommendation, StoredAssistantSettings,
-    WindowStateFile,
-};
-use recommendations::{mock_recommendations, snapshot_with_recommendations};
+use models::{AssistantSettings, CraftRecommendation, StoredAssistantSettings, WindowStateFile};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -50,6 +47,7 @@ pub(crate) struct AssistantState {
     settings_path: PathBuf,
     pub(crate) window_state_path: PathBuf,
     cached_recommendations: Mutex<Option<Vec<CraftRecommendation>>>,
+    map_password_cache: map_passwords::MapPasswordCache,
     image_cache: image_cache::ImageCache,
     kkrb_client: kkrb::KkrbClient,
 }
@@ -80,6 +78,7 @@ impl AssistantState {
             settings_path,
             window_state_path,
             cached_recommendations: Mutex::new(None),
+            map_password_cache: map_passwords::MapPasswordCache::default(),
             image_cache: image_cache::ImageCache::new(&app_data_dir),
             kkrb_client: kkrb::KkrbClient::new(app_data_dir.join("kkrb_session.json")),
         }
@@ -238,60 +237,6 @@ fn persist_window_lock_state(state: &AssistantState, locked: bool) {
 
     if let Err(error) = write_window_state_file(&state.window_state_path, &window_state) {
         app_log::warn(format!("保存窗口锁定状态失败：{error}"));
-    }
-}
-
-#[tauri::command]
-/// 获取制作推荐快照并在失败时回退到缓存或 mock。
-fn get_recommendations(state: State<'_, AssistantState>) -> AssistantSnapshot {
-    app_log::debug("前端请求获取制作推荐");
-    let locked = lock_value(&state);
-
-    match state.kkrb_client.fetch_live_recommendations() {
-        Ok(result) => {
-            let mut recommendations = result.recommendations;
-            state
-                .image_cache
-                .cache_recommendation_images(&mut recommendations);
-            app_log::info(format!(
-                "制作推荐获取成功，来源：kkrb 实时数据，session：{}，数量：{}",
-                result.session_source.label(),
-                recommendations.len(),
-            ));
-            *state
-                .cached_recommendations
-                .lock()
-                .expect("assistant cache lock poisoned") = Some(recommendations.clone());
-
-            snapshot_with_recommendations(locked, "kkrb 实时数据", recommendations)
-        }
-        Err(error) => {
-            app_log::warn(format!("kkrb 实时数据获取失败：{error}"));
-            let cached = state
-                .cached_recommendations
-                .lock()
-                .expect("assistant cache lock poisoned")
-                .clone();
-
-            if let Some(recommendations) = cached {
-                app_log::info(format!(
-                    "使用内存缓存推荐数据，数量：{}",
-                    recommendations.len()
-                ));
-                snapshot_with_recommendations(
-                    locked,
-                    format!("kkrb 获取失败，使用缓存：{error}"),
-                    recommendations,
-                )
-            } else {
-                app_log::info("没有可用缓存，使用本地 mock 推荐数据");
-                snapshot_with_recommendations(
-                    locked,
-                    format!("kkrb 获取失败，使用 mock：{error}"),
-                    mock_recommendations(),
-                )
-            }
-        }
     }
 }
 
@@ -601,7 +546,8 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
-            get_recommendations,
+            recommendations::get_recommendations,
+            map_passwords::get_map_passwords,
             get_lock_state,
             set_lock_state,
             get_settings,
@@ -623,6 +569,7 @@ pub fn run() {
 mod tests {
     use super::*;
     use crate::models::WindowPosition;
+    use crate::recommendations::mock_recommendations;
     use std::fs;
 
     #[test]
@@ -776,6 +723,7 @@ mod tests {
             settings_path: path.with_file_name("unused-settings.json"),
             window_state_path: path.clone(),
             cached_recommendations: Mutex::new(None),
+            map_password_cache: map_passwords::MapPasswordCache::default(),
             image_cache: image_cache::ImageCache::new(&std::env::temp_dir()),
             kkrb_client: kkrb::KkrbClient::default(),
         };

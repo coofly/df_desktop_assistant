@@ -14,9 +14,9 @@
       {
         "title": "三角洲行动特勤处制作助手",
         "width": 1120,
-        "height": 244,
+        "height": 374,
         "minWidth": 910,
-        "minHeight": 220,
+        "minHeight": 350,
         "decorations": false,
         "resizable": true,
         "skipTaskbar": true,

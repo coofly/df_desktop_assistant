@@ -1,7 +1,8 @@
 <script lang="ts">
-  // 文件说明：主面板展示制作推荐、刷新状态和窗口锁定控制。
+  // 文件说明：主面板上下展示制作推荐与地图密码，并提供刷新和窗口控制。
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import type { UnlistenFn } from "@tauri-apps/api/event";
+  import MapPasswords from "$lib/MapPasswords.svelte";
 
   // 制作推荐条目的前端展示结构。
   type CraftRecommendation = {
@@ -104,6 +105,9 @@
   let refreshTimer: ReturnType<typeof window.setInterval> | undefined;
   // 保存设置事件监听的取消函数。
   let unlistenSettings: UnlistenFn | undefined;
+  // 保存地图密码组件及其独立刷新状态。
+  let passwordPanel = $state<ReturnType<typeof MapPasswords>>();
+  let passwordsLoading = $state(false);
 
   // 将数值格式化为中文分组数字。
   function formatNumber(value: number) {
@@ -198,6 +202,11 @@
       loading = false;
       refreshInFlight = false;
     }
+  }
+
+  // 共用手动刷新按钮同时请求两个板块。
+  async function refreshAll() {
+    await Promise.all([loadRecommendations(), passwordPanel?.refresh()]);
   }
 
   // 从后端加载助手设置并启动自动刷新。
@@ -347,16 +356,16 @@
     <div
       class="controls"
       role="group"
-      aria-label="窗口和推荐控制"
+      aria-label="窗口和数据控制"
       onpointerdown={(event) => event.stopPropagation()}
     >
       <button
         class="icon-button"
         type="button"
-        title="刷新推荐"
-        aria-label="刷新推荐"
-        onclick={loadRecommendations}
-        disabled={loading}
+        title="刷新制作推荐和地图密码"
+        aria-label="刷新制作推荐和地图密码"
+        onclick={refreshAll}
+        disabled={loading || passwordsLoading}
       >
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M21 12a9 9 0 0 1-15.3 6.4" />
@@ -438,6 +447,8 @@
     {/each}
   </section>
 
+  <MapPasswords bind:this={passwordPanel} bind:loading={passwordsLoading} />
+
   <button
     class:locked={snapshot.locked}
     class="resize-grip"
@@ -470,7 +481,7 @@
   .assistant-shell {
     position: relative;
     display: grid;
-    grid-template-rows: auto minmax(0, 1fr);
+    grid-template-rows: auto minmax(156px, 1fr) auto;
     gap: 10px;
     width: 100vw;
     height: 100vh;
@@ -601,14 +612,14 @@
 
   .recommendations {
     display: grid;
-    grid-template-columns: repeat(4, minmax(200px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 14px;
     min-height: 0;
   }
 
   .card {
     display: grid;
-    grid-template-columns: minmax(124px, 1fr) 118px;
+    grid-template-columns: minmax(0, 1fr) 118px;
     min-height: 0;
     overflow: hidden;
     border: 1px solid #50545a;
@@ -715,14 +726,17 @@
   }
 
   @media (max-width: 980px) {
-    .recommendations {
-      grid-template-columns: repeat(2, minmax(240px, 1fr));
+    .card {
+      grid-template-columns: minmax(0, 1fr) 88px;
     }
 
-    .assistant-shell {
-      height: auto;
-      min-height: 100vh;
-      overflow: auto;
+    .meta,
+    dl {
+      padding-left: 10px;
+    }
+
+    .item-panel {
+      padding: 6px;
     }
   }
 </style>

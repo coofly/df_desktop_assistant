@@ -1,6 +1,72 @@
-//! 提供推荐快照组装和无网络时的兜底数据。
+//! 提供制作推荐命令、快照组装和无网络时的兜底数据。
 
 use crate::models::{AssistantSnapshot, CraftRecommendation};
+use crate::{app_log, lock_value, AssistantState};
+use tauri::Manager;
+
+/// 在后台线程获取制作推荐，保持快照结构和失败兜底逻辑。
+#[tauri::command]
+pub(crate) async fn get_recommendations(
+    app: tauri::AppHandle,
+) -> Result<AssistantSnapshot, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AssistantState>();
+        fetch_recommendations(&state)
+    })
+    .await
+    .map_err(|error| error.to_string())
+}
+
+/// 获取制作推荐快照并在失败时回退到缓存或 mock。
+fn fetch_recommendations(state: &AssistantState) -> AssistantSnapshot {
+    app_log::debug("前端请求获取制作推荐");
+    match state.kkrb_client.fetch_live_recommendations() {
+        Ok(result) => {
+            let mut recommendations = result.recommendations;
+            state
+                .image_cache
+                .cache_recommendation_images(&mut recommendations);
+            app_log::info(format!(
+                "制作推荐获取成功，来源：kkrb 实时数据，session：{}，数量：{}",
+                result.session_source.label(),
+                recommendations.len(),
+            ));
+            *state
+                .cached_recommendations
+                .lock()
+                .expect("assistant cache lock poisoned") = Some(recommendations.clone());
+
+            snapshot_with_recommendations(lock_value(state), "kkrb 实时数据", recommendations)
+        }
+        Err(error) => {
+            app_log::warn(format!("kkrb 实时数据获取失败：{error}"));
+            let cached = state
+                .cached_recommendations
+                .lock()
+                .expect("assistant cache lock poisoned")
+                .clone();
+
+            if let Some(recommendations) = cached {
+                app_log::info(format!(
+                    "使用内存缓存推荐数据，数量：{}",
+                    recommendations.len()
+                ));
+                snapshot_with_recommendations(
+                    lock_value(state),
+                    format!("kkrb 获取失败，使用缓存：{error}"),
+                    recommendations,
+                )
+            } else {
+                app_log::info("没有可用缓存，使用本地 mock 推荐数据");
+                snapshot_with_recommendations(
+                    lock_value(state),
+                    format!("kkrb 获取失败，使用 mock：{error}"),
+                    mock_recommendations(),
+                )
+            }
+        }
+    }
+}
 
 /// 提供无网络或失败兜底的本地推荐数据。
 pub(crate) fn mock_recommendations() -> Vec<CraftRecommendation> {
