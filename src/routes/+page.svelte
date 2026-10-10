@@ -2,6 +2,7 @@
   // 文件说明：主面板上下展示制作推荐与地图密码，并提供刷新和窗口控制。
   import { convertFileSrc, invoke } from "@tauri-apps/api/core";
   import type { UnlistenFn } from "@tauri-apps/api/event";
+  import BeijingClock from "$lib/BeijingClock.svelte";
   import MapPasswords from "$lib/MapPasswords.svelte";
 
   // 制作推荐条目的前端展示结构。
@@ -325,7 +326,6 @@
       if (refreshTimer) {
         window.clearInterval(refreshTimer);
       }
-
       if (unlistenSettings) {
         unlistenSettings();
       }
@@ -359,6 +359,7 @@
       aria-label="窗口和数据控制"
       onpointerdown={(event) => event.stopPropagation()}
     >
+      <BeijingClock />
       <button
         class="icon-button"
         type="button"

@@ -8,6 +8,7 @@ mod map_passwords;
 mod models;
 mod recommendations;
 mod startup;
+mod time_sync;
 mod windowing;
 
 use models::{AssistantSettings, CraftRecommendation, StoredAssistantSettings, WindowStateFile};
@@ -548,6 +549,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             recommendations::get_recommendations,
             map_passwords::get_map_passwords,
+            time_sync::sync_beijing_time,
             get_lock_state,
             set_lock_state,
             get_settings,
